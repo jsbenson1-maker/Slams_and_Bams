@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(PhyzixPlugin VERSION 1.4.2 LANGUAGES CXX)
+project(PhyzixPlugin VERSION 1.4.2 LANGUAGES C CXX)
 
 # Link MSVC Runtime statically to prevent missing DLL issues (VCRUNTIME140.dll, MSVCP140.dll) on client machines
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
