@@ -17,7 +17,7 @@ jobs:
 
     - name: Clone JUCE Framework
       run: |
-        git clone --branch 8.0.2 --depth 1 https://github.com/juce-framework/JUCE.git $GITHUB_WORKSPACE/JUCE
+        git clone --branch 8.0.13 --depth 1 https://github.com/juce-framework/JUCE.git $GITHUB_WORKSPACE/JUCE
 
     - name: Configure CMake
       run: |
