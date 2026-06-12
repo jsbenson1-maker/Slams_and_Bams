@@ -16,6 +16,8 @@ export default function Knob({
   tooltip = "Drag vertically to adjust. Double-click to reset.",
   isAutomated = false,
   onClearAutomation = null,
+  onContextMenu = null,
+  showMidiCcOverlay = false,
 }) {
   const knobRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -81,7 +83,14 @@ export default function Knob({
       className="knob-wrapper"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
+      onContextMenu={(e) => {
+        if (onContextMenu) {
+          e.preventDefault();
+          onContextMenu(e);
+        }
+      }}
       title={tooltip}
+      style={{ position: 'relative' }}
     >
       {/* Knob Label with Motion indicator */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.2rem', width: '100%' }}>
@@ -196,73 +205,34 @@ export default function Knob({
           fontWeight: midiCc !== null ? '600' : '400',
         }}
       >
-        {isHovered && midiCc !== null ? (
-          <span 
-            onClick={onMidiUnbind} 
-            style={{ cursor: 'pointer', textDecoration: 'underline' }}
-            title="Click to unbind CC"
-          >
-            CC {midiCc} ⨉
-          </span>
-        ) : (
-          midiCc !== null ? `CC ${midiCc}` : valueDisplayFormatter(value)
-        )}
+        {midiCc !== null ? `CC ${midiCc}` : valueDisplayFormatter(value)}
       </span>
 
-      {/* MIDI Learn Activation Hover Button */}
-      {isHovered && !isLearning && onMidiLearn && (
-        <button
-          onClick={onMidiLearn}
-          style={{
-            position: 'absolute',
-            top: '12px',
-            right: '-12px',
-            background: 'var(--accent-learn)',
-            border: 'none',
-            color: 'white',
-            borderRadius: '50%',
-            width: '14px',
-            height: '14px',
-            fontSize: '8px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
-            zIndex: 10,
-          }}
-          title="Learn MIDI CC"
-        >
-          L
-        </button>
-      )}
-
-      {/* Cancel Learn Button */}
-      {isLearning && (
-        <button
-          onClick={onMidiUnbind}
-          style={{
-            position: 'absolute',
-            top: '12px',
-            right: '-12px',
-            background: '#e06c43',
-            border: 'none',
-            color: 'white',
-            borderRadius: '50%',
-            width: '14px',
-            height: '14px',
-            fontSize: '8px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
-            zIndex: 10,
-          }}
-          title="Cancel MIDI Learn"
-        >
-          ⨉
-        </button>
+      {/* CC Overlay */}
+      {showMidiCcOverlay && (
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          background: 'rgba(255, 255, 255, 0.88)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: '9px',
+          fontFamily: 'var(--font-mono)',
+          fontWeight: '900',
+          color: 'var(--accent-orange)',
+          borderRadius: '8px',
+          border: '1.2px solid var(--accent-orange)',
+          zIndex: 100,
+          pointerEvents: 'none',
+          boxShadow: 'var(--shadow-sm)'
+        }}>
+          <span>{midiCc !== null ? `CC ${midiCc}` : 'CC --'}</span>
+        </div>
       )}
     </div>
   );

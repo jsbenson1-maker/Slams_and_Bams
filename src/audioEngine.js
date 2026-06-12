@@ -139,6 +139,11 @@ class AudioEngine {
     this.reverbWet = null;
     this.reverbDry = null;
     this.reverbOutput = null;
+    this.bitcrusherEnabled = true;
+    this.bitcrusherMix = 1.0;
+    this.crunchBus = null;        // Bitcrusher feeding bus
+    this.crunchBypass = new Array(12).fill(false); // channel-specific bitcrusher bypass
+    this.fxInputBus = null;
 
     // Generic knob motion automation (12 channels, each has step arrays)
     this.instrumentAutomation = {};
@@ -150,6 +155,8 @@ class AudioEngine {
     this.isSlamTheDoorActive = false;
     this.isSlamPending = false;
     this.timeSignature = '4/4';
+    this.slamMix = 1.0;
+    this.doorType = 0;
   }
 
   log(msg, lvl = 'INFO') {
@@ -178,12 +185,12 @@ class AudioEngine {
     // Door Slam neomorphic FX nodes and dry/wet gain routing
     this.slamFilterNode = this.ctx.createBiquadFilter();
     this.slamFilterNode.type = 'lowpass';
-    this.slamFilterNode.frequency.setValueAtTime(320, this.ctx.currentTime); // muffled lowpass
+    this.slamFilterNode.frequency.setValueAtTime(450, this.ctx.currentTime); // muffled lowpass
 
     this.slamCompressorNode = this.ctx.createDynamicsCompressor();
-    this.slamCompressorNode.threshold.setValueAtTime(-42, this.ctx.currentTime); // squashed threshold
+    this.slamCompressorNode.threshold.setValueAtTime(-32, this.ctx.currentTime); // squashed threshold
     this.slamCompressorNode.knee.setValueAtTime(8, this.ctx.currentTime);
-    this.slamCompressorNode.ratio.setValueAtTime(16, this.ctx.currentTime); // high compression ratio
+    this.slamCompressorNode.ratio.setValueAtTime(8, this.ctx.currentTime); // moderate compression ratio
     this.slamCompressorNode.attack.setValueAtTime(0.005, this.ctx.currentTime);
     this.slamCompressorNode.release.setValueAtTime(0.080, this.ctx.currentTime);
 
@@ -277,12 +284,13 @@ class AudioEngine {
       const step = this.bitcrusherDownsample;
       
       let lastVal = 0;
+      const mix = this.bitcrusherMix !== undefined ? this.bitcrusherMix : 1.0;
       for (let i = 0; i < input.length; i++) {
         if (i % step === 0) {
           const val = input[i];
           lastVal = Math.round(val * norm) / norm;
         }
-        output[i] = lastVal;
+        output[i] = (1.0 - mix) * input[i] + mix * lastVal;
       }
     };
 
@@ -298,6 +306,8 @@ class AudioEngine {
     this.updateDistortionDrive();
 
     // B. Resonant Sweeper Filter
+    this.filterInput = this.ctx.createGain();
+    this.filterOutput = this.ctx.createGain();
     this.filterNode = this.ctx.createBiquadFilter();
     this.updateFilter();
 
@@ -346,7 +356,7 @@ class AudioEngine {
     // Disconnect outputs only
     this.fxInputBus.disconnect();
     this.distNode.disconnect();
-    this.filterNode.disconnect();
+    if (this.filterOutput) this.filterOutput.disconnect();
     this.delayOutput.disconnect();
     this.reverbOutput.disconnect();
     if (this.sidechainNode) this.sidechainNode.disconnect();
@@ -363,8 +373,8 @@ class AudioEngine {
           lastNode.connect(this.distNode);
           lastNode = this.distNode;
         } else if (effectKey === 'filter') {
-          lastNode.connect(this.filterNode);
-          lastNode = this.filterNode;
+          lastNode.connect(this.filterInput);
+          lastNode = this.filterOutput;
         } else if (effectKey === 'delay') {
           lastNode.connect(this.delayInput);
           lastNode = this.delayOutput;
@@ -1396,11 +1406,163 @@ class AudioEngine {
   }
 
   updateFilter() {
-    if (!this.filterNode) return;
+    if (!this.ctx || !this.filterInput || !this.filterOutput) return;
+
     const { cutoff, resonance, type } = this.fxParams.filter;
-    this.filterNode.type = type;
-    this.filterNode.frequency.setValueAtTime(Math.max(50, Math.min(20000, cutoff)), this.ctx?.currentTime || 0);
-    this.filterNode.Q.setValueAtTime(Math.max(0.1, Math.min(25, resonance)), this.ctx?.currentTime || 0);
+    const time = this.ctx.currentTime;
+
+    // 1. Cleanup existing sub-graph
+    if (this.filterNode) {
+      try { this.filterNode.disconnect(); } catch (e) {}
+    }
+    if (this.combDelay) {
+      try { this.combDelay.disconnect(); } catch (e) {}
+      this.combDelay = null;
+    }
+    if (this.combFeedback) {
+      try { this.combFeedback.disconnect(); } catch (e) {}
+      this.combFeedback = null;
+    }
+    if (this.formantFilters) {
+      this.formantFilters.forEach(f => {
+        try { f.disconnect(); } catch (e) {}
+      });
+      this.formantFilters = null;
+    }
+    if (this.ringOsc) {
+      try { this.ringOsc.stop(); } catch (e) {}
+      try { this.ringOsc.disconnect(); } catch (e) {}
+      this.ringOsc = null;
+    }
+    if (this.ringGain) {
+      try { this.ringGain.disconnect(); } catch (e) {}
+      this.ringGain = null;
+    }
+    if (this.phaserFilters) {
+      this.phaserFilters.forEach(f => {
+        try { f.disconnect(); } catch (e) {}
+      });
+      this.phaserFilters = null;
+    }
+    if (this.lp24Filters) {
+      this.lp24Filters.forEach(f => {
+        try { f.disconnect(); } catch (e) {}
+      });
+      this.lp24Filters = null;
+    }
+    try { this.filterInput.disconnect(); } catch (e) {}
+
+    // Safe clamped parameters
+    const safeCutoff = Math.max(50, Math.min(20000, cutoff));
+    const safeResonance = Math.max(0.1, Math.min(25, resonance));
+
+    // 2. Build and route based on filter type
+    if (type === 'comb') {
+      // Comb Filter: Delay + Feedback loop
+      const delayTime = Math.max(0.0005, Math.min(0.02, 1.0 / safeCutoff));
+      this.combDelay = this.ctx.createDelay(0.05);
+      this.combDelay.delayTime.setValueAtTime(delayTime, time);
+
+      this.combFeedback = this.ctx.createGain();
+      const fbVal = Math.min(0.95, (safeResonance / 25.0) * 0.9);
+      this.combFeedback.gain.setValueAtTime(fbVal, time);
+
+      // Connect input to delay and output (dry + wet mix)
+      this.filterInput.connect(this.combDelay);
+      this.filterInput.connect(this.filterOutput);
+
+      this.combDelay.connect(this.combFeedback);
+      this.combFeedback.connect(this.combDelay);
+      this.combDelay.connect(this.filterOutput);
+
+    } else if (type === 'formant') {
+      // Formant Filter: Parallel Bandpass filters
+      const fRatio = safeCutoff / 1000.0;
+      const formants = [
+        { f: 730 * fRatio, q: 12 },
+        { f: 1090 * fRatio, q: 10 },
+        { f: 2440 * fRatio, q: 8 }
+      ];
+
+      this.formantFilters = [];
+      formants.forEach(cfg => {
+        const bp = this.ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(Math.max(50, Math.min(20000, cfg.f)), time);
+        bp.Q.setValueAtTime(cfg.q * (safeResonance / 2.0), time);
+        
+        this.filterInput.connect(bp);
+        bp.connect(this.filterOutput);
+        this.formantFilters.push(bp);
+      });
+
+    } else if (type === 'ringmod') {
+      // Ring Modulator
+      this.ringGain = this.ctx.createGain();
+      this.ringGain.gain.setValueAtTime(0.0, time);
+
+      this.ringOsc = this.ctx.createOscillator();
+      this.ringOsc.type = 'sine';
+      this.ringOsc.frequency.setValueAtTime(safeCutoff, time);
+
+      this.filterInput.connect(this.ringGain);
+      this.ringOsc.connect(this.ringGain.gain);
+      this.ringGain.connect(this.filterOutput);
+
+      // Dry mix
+      this.filterInput.connect(this.filterOutput);
+      this.ringOsc.start(time);
+
+    } else if (type === 'phaser') {
+      // Phaser
+      this.phaserFilters = [];
+      let lastNode = this.filterInput;
+      for (let i = 0; i < 4; i++) {
+        const ap = this.ctx.createBiquadFilter();
+        ap.type = 'allpass';
+        ap.frequency.setValueAtTime(safeCutoff, time);
+        ap.Q.setValueAtTime(safeResonance, time);
+        lastNode.connect(ap);
+        lastNode = ap;
+        this.phaserFilters.push(ap);
+      }
+      lastNode.connect(this.filterOutput);
+      this.filterInput.connect(this.filterOutput);
+
+    } else if (type === 'lowpass24') {
+      // 24dB Lowpass
+      const lp1 = this.ctx.createBiquadFilter();
+      lp1.type = 'lowpass';
+      lp1.frequency.setValueAtTime(safeCutoff, time);
+      lp1.Q.setValueAtTime(Math.sqrt(safeResonance), time);
+
+      const lp2 = this.ctx.createBiquadFilter();
+      lp2.type = 'lowpass';
+      lp2.frequency.setValueAtTime(safeCutoff, time);
+      lp2.Q.setValueAtTime(Math.sqrt(safeResonance), time);
+
+      this.filterInput.connect(lp1);
+      lp1.connect(lp2);
+      lp2.connect(this.filterOutput);
+
+      this.lp24Filters = [lp1, lp2];
+
+    } else {
+      // Standard Biquad Types
+      if (!this.filterNode) {
+        this.filterNode = this.ctx.createBiquadFilter();
+      }
+      let biquadType = type;
+      if (biquadType !== 'lowpass' && biquadType !== 'highpass' && biquadType !== 'bandpass' && biquadType !== 'notch' && biquadType !== 'peaking') {
+        biquadType = 'lowpass';
+      }
+      this.filterNode.type = biquadType;
+      this.filterNode.frequency.setValueAtTime(safeCutoff, time);
+      this.filterNode.Q.setValueAtTime(safeResonance, time);
+
+      this.filterInput.connect(this.filterNode);
+      this.filterNode.connect(this.filterOutput);
+    }
   }
 
   updateDelay() {
@@ -1577,19 +1739,21 @@ class AudioEngine {
     // Apply real-time FX automation curves
     this.applyFxAutomationForStep(step, time);
 
-    // Handle pending Slam the Door trigger on 1st or 4th beat
-    if (this.isSlamPending && this.isFirstOrFourthBeat(step)) {
+    // Handle pending Slam the Door trigger on next beat boundary
+    if (this.isSlamPending && this.isBeatBoundary(step)) {
       this.isSlamPending = false;
       this.isSlamTheDoorActive = true;
+      const mixVal = this.slamMix !== undefined ? this.slamMix : 1.0;
       this.slamDryGain.gain.cancelScheduledValues(time);
       this.slamWetGain.gain.cancelScheduledValues(time);
-      this.slamDryGain.gain.linearRampToValueAtTime(0.0, time + 0.15); // gentle 150ms transition
-      this.slamWetGain.gain.linearRampToValueAtTime(1.0, time + 0.15);
+      this.slamDryGain.gain.linearRampToValueAtTime(1.0 - mixVal, time + 0.15); // gentle 150ms transition
+      this.slamWetGain.gain.linearRampToValueAtTime(mixVal, time + 0.15);
       this.log(`Pending Slam the Door engaged at step ${step} (time: ${time.toFixed(3)})`);
-    }
-
-    // Slam the Door automatic bass note triggering
-    if (this.isSlamTheDoorActive && this.isFirstOrFourthBeat(step)) {
+      if (this.isBarStart(step)) {
+        this.synthSlamTheDoorNote(time);
+      }
+    } else if (this.isSlamTheDoorActive && this.isBarStart(step)) {
+      // Slam the Door automatic bass note triggering on bar starts
       this.synthSlamTheDoorNote(time);
     }
 
@@ -1713,6 +1877,72 @@ class AudioEngine {
             this.triggerInstrument(focusedInst, this.ctx.currentTime);
           }
         }, stepDuration * 500);
+        break;
+      }
+
+      case 'crescendo': {
+        const modulo = step % 16;
+        const vol = 0.15 + 0.85 * (modulo / 15);
+        this.triggerInstrument(1, time, null, vol);
+        if (modulo % 4 === 0) {
+          this.triggerInstrument(6, time, 0.5, vol);
+        }
+        break;
+      }
+
+      case 'pitch_rise': {
+        const modulo = step % 16;
+        const pitch = 0.5 + 1.5 * (modulo / 15);
+        this.triggerInstrument(1, time, pitch, 0.7);
+        break;
+      }
+
+      case 'melodic_run': {
+        const modulo = step % 16;
+        const degrees = [0, 2, 4, 5, 7, 9, 11, 12, 14, 12, 11, 9, 7, 5, 4, 2];
+        const degree = degrees[modulo];
+        const pitch = Math.pow(2, degree / 12) * 0.5;
+        this.triggerInstrument(7, time, pitch, 0.8);
+        this.triggerInstrument(2, time, null, 0.3);
+        break;
+      }
+
+      case 'drum_n_bass_crossover': {
+        const modulo = step % 16;
+        if (modulo === 0 || modulo === 6 || modulo === 10) {
+          this.triggerInstrument(0, time, null, 0.9);
+        } else if (modulo === 4 || modulo === 12 || modulo === 14) {
+          this.triggerInstrument(1, time, null, 0.85);
+        } else {
+          this.triggerInstrument(2, time, null, 0.5);
+        }
+        break;
+      }
+
+      case 'dynamic_decay': {
+        const modulo = step % 16;
+        const pct = modulo / 15;
+        if (this.filterNode && this.fxEnabled['filter']) {
+          const targetCutoff = 300 + 4000 * pct;
+          this.filterNode.frequency.setValueAtTime(targetCutoff, time);
+        }
+        this.triggerInstrument(1, time, null, 0.8);
+        if (modulo % 2 === 0) {
+          this.triggerInstrument(6, time, 0.4 + 0.4 * pct, 0.7);
+        }
+        break;
+      }
+
+      case 'chaos_sweep': {
+        const modulo = step % 16;
+        const pct = modulo / 15;
+        if (this.filterNode && this.fxEnabled['filter']) {
+          this.filterNode.type = 'bandpass';
+          this.filterNode.frequency.setValueAtTime(200 + 8000 * pct, time);
+          this.filterNode.Q.setValueAtTime(5.0, time);
+        }
+        const randIdx = Math.floor(Math.random() * 6) + 6;
+        this.triggerInstrument(randIdx, time, 0.5 + Math.random() * 1.0, 0.7);
         break;
       }
       
@@ -1845,16 +2075,24 @@ class AudioEngine {
     }
   }
 
-  isFirstOrFourthBeat(step) {
+  isBeatBoundary(step) {
+    const sig = this.timeSignature || '4/4';
+    if (sig === '6/8') {
+      return step % 3 === 0;
+    }
+    return step % 4 === 0;
+  }
+
+  isBarStart(step) {
     const sig = this.timeSignature || '4/4';
     if (sig === '4/4') {
-      return step === 0 || step === 12;
+      return step % 16 === 0;
     } else if (sig === '3/4') {
-      return step === 0 || step === 8;
+      return step % 12 === 0;
     } else if (sig === '5/4') {
-      return step === 0 || step === 12;
+      return step % 20 === 0;
     } else if (sig === '6/8') {
-      return step === 0 || step === 9;
+      return step % 12 === 0;
     }
     return step === 0;
   }
@@ -1867,6 +2105,7 @@ class AudioEngine {
     }
     if (!this.ctx) return;
     
+    const mixVal = this.slamMix !== undefined ? this.slamMix : 1.0;
     if (active) {
       if (!this.isPlaying) {
         // Trigger instantly if stationary
@@ -1874,11 +2113,11 @@ class AudioEngine {
         this.isSlamPending = false;
         this.slamDryGain.gain.cancelScheduledValues(time);
         this.slamWetGain.gain.cancelScheduledValues(time);
-        this.slamDryGain.gain.linearRampToValueAtTime(0.0, time + 0.15); // gentle 150ms transition
-        this.slamWetGain.gain.linearRampToValueAtTime(1.0, time + 0.15);
+        this.slamDryGain.gain.linearRampToValueAtTime(1.0 - mixVal, time + 0.15); // gentle 150ms transition
+        this.slamWetGain.gain.linearRampToValueAtTime(mixVal, time + 0.15);
         this.synthSlamTheDoorNote(time);
       } else {
-        // Delay until the 1st or 4th beat
+        // Quantize delay until the next beat boundary
         this.isSlamPending = true;
       }
     } else {
@@ -1889,6 +2128,51 @@ class AudioEngine {
       this.slamDryGain.gain.linearRampToValueAtTime(1.0, time + 0.15); // gentle 150ms transition
       this.slamWetGain.gain.linearRampToValueAtTime(0.0, time + 0.15);
     }
+  }
+
+  setSlamMix(mix, time = null) {
+    this.slamMix = mix;
+    if (this.isSlamTheDoorActive && !this.isSlamPending && this.ctx) {
+      const t = time || this.ctx.currentTime;
+      this.slamDryGain.gain.cancelScheduledValues(t);
+      this.slamWetGain.gain.cancelScheduledValues(t);
+      this.slamDryGain.gain.linearRampToValueAtTime(1.0 - mix, t + 0.05);
+      this.slamWetGain.gain.linearRampToValueAtTime(mix, t + 0.05);
+    }
+  }
+
+  setDoorType(type) {
+    this.doorType = type;
+    this.updateSlamFilterType();
+  }
+
+  updateSlamFilterType() {
+    if (!this.ctx || !this.slamFilterNode) return;
+    const type = this.doorType || 0;
+    let cutoff = 450;
+    let Q = 1.0;
+    let filterType = 'lowpass';
+    
+    if (type === 1) { // Heavy Oak
+      cutoff = 250; Q = 1.5; filterType = 'lowpass';
+    } else if (type === 2) { // Aluminum
+      cutoff = 600; Q = 2.0; filterType = 'bandpass';
+    } else if (type === 3) { // Steel Vault
+      cutoff = 150; Q = 2.5; filterType = 'lowpass';
+    } else if (type === 4) { // Glass Door
+      cutoff = 1500; Q = 0.8; filterType = 'highpass';
+    } else if (type === 5) { // Submarine Hatch
+      cutoff = 200; Q = 3.0; filterType = 'bandpass';
+    } else if (type === 6) { // Sci-Fi Airlock
+      cutoff = 800; Q = 4.0; filterType = 'bandpass';
+    } else if (type === 7) { // Cathedral Gate
+      cutoff = 350; Q = 0.7; filterType = 'lowpass';
+    }
+    
+    const time = this.ctx.currentTime;
+    this.slamFilterNode.type = filterType;
+    this.slamFilterNode.frequency.setValueAtTime(cutoff, time);
+    this.slamFilterNode.Q.setValueAtTime(Q, time);
   }
 
   // Booming, ultra-long decay bass note (Sine sweep 55Hz -> 30Hz)

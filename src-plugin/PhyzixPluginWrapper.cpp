@@ -222,7 +222,7 @@ private:
 
 class Bitcrusher {
 public:
-    void process(float& left, float& right, int bits, int downsample) {
+    void process(float& left, float& right, int bits, int downsample, float mix) {
         if (!enabled) return;
         float norm = std::pow(2.0f, (float)bits - 1.0f);
         sampleCounter++;
@@ -231,8 +231,8 @@ public:
             lastLeft = std::round(left * norm) / norm;
             lastRight = std::round(right * norm) / norm;
         }
-        left = lastLeft;
-        right = lastRight;
+        left = (1.0f - mix) * left + mix * lastLeft;
+        right = (1.0f - mix) * right + mix * lastRight;
     }
     bool enabled = true;
 private:
@@ -530,6 +530,10 @@ public:
                 pitchAutomationGrid[r][s] = 0.5f;
             }
         }
+        for (int i = 0; i < 128; ++i) {
+            midiCcMappings[i].trackIdx = -2;
+            midiCcMappings[i].paramKey = "";
+        }
     }
 
     ~PhyzixAudioProcessor() override {
@@ -661,6 +665,21 @@ public:
     // Fills Overrides
     std::atomic<bool> fillActive{false};
     juce::String fillPattern = "traditional_a";
+
+    // MIDI CC and extra parameters
+    struct MidiCcMapping {
+        int trackIdx = -2;
+        juce::String paramKey;
+    };
+    MidiCcMapping midiCcMappings[128];
+    juce::CriticalSection midiCcMutex;
+    std::atomic<int> learningCcParamTrack{-2};
+    juce::String learningCcParamKey;
+    std::atomic<bool> triggerMidiCcUpdateFlag{false};
+    std::atomic<bool> showMidiCcOverlay{false};
+    std::atomic<float> slamMix{1.0f};
+    std::atomic<int> doorType{0};
+    std::atomic<float> bitcrusherMix{1.0f};
 
     // Automation loops
     std::map<juce::String, float> automationGrid[12][64];
@@ -1008,6 +1027,140 @@ public:
         return true;
     }
 
+    void updateSlamFilter(double sampleRate) {
+        int type = doorType.load();
+        BiquadFilter::Type filterTypeEnum = BiquadFilter::Lowpass;
+        float cutoff = 450.0f;
+        float Q = 1.0f;
+        
+        if (type == 1) { // Heavy Oak
+            cutoff = 250.0f; Q = 1.5f; filterTypeEnum = BiquadFilter::Lowpass;
+        } else if (type == 2) { // Aluminum
+            cutoff = 600.0f; Q = 2.0f; filterTypeEnum = BiquadFilter::Bandpass;
+        } else if (type == 3) { // Steel Vault
+            cutoff = 150.0f; Q = 2.5f; filterTypeEnum = BiquadFilter::Lowpass;
+        } else if (type == 4) { // Glass Door
+            cutoff = 1500.0f; Q = 0.8f; filterTypeEnum = BiquadFilter::Highpass;
+        } else if (type == 5) { // Submarine Hatch
+            cutoff = 200.0f; Q = 3.0f; filterTypeEnum = BiquadFilter::Bandpass;
+        } else if (type == 6) { // Sci-Fi Airlock
+            cutoff = 800.0f; Q = 4.0f; filterTypeEnum = BiquadFilter::Bandpass;
+        } else if (type == 7) { // Cathedral Gate
+            cutoff = 350.0f; Q = 0.7f; filterTypeEnum = BiquadFilter::Lowpass;
+        }
+        
+        masterSlamFilter.setParams(filterTypeEnum, cutoff, Q, sampleRate);
+    }
+
+    void setScaledGlobalParameterValue(const juce::String& paramKey, float normVal) {
+        if (paramKey == "masterVolume") {
+            masterVolume = normVal;
+        } else if (paramKey == "bpm") {
+            bpm = (int)(20.0f + normVal * 220.0f);
+        } else if (paramKey == "swing") {
+            swing = normVal;
+        } else if (paramKey == "slamMix") {
+            slamMix = normVal;
+        } else if (paramKey == "distDrive") {
+            distDrive = normVal;
+        } else if (paramKey == "filterCutoff") {
+            filterCutoff = 60.0f + normVal * 17940.0f;
+        } else if (paramKey == "filterResonance") {
+            filterResonance = 0.1f + normVal * 9.9f;
+        } else if (paramKey == "delayTime") {
+            delayTime = 0.05f + normVal * 1.95f;
+        } else if (paramKey == "delayFeedback") {
+            delayFeedback = normVal * 0.95f;
+        } else if (paramKey == "delayMix") {
+            delayMix = normVal;
+        } else if (paramKey == "reverbDecay") {
+            reverbDecay = 0.1f + normVal * 4.9f;
+        } else if (paramKey == "reverbMix") {
+            reverbMix = normVal;
+        } else if (paramKey == "sidechainRatio") {
+            sidechainRatio = normVal;
+        } else if (paramKey == "sidechainAttack") {
+            sidechainAttack = 0.001f + normVal * 0.099f;
+        } else if (paramKey == "sidechainRelease") {
+            sidechainRelease = 0.01f + normVal * 0.99f;
+        } else if (paramKey == "bitcrusherBits") {
+            bitcrusherBits = (int)(1.0f + normVal * 15.0f);
+        } else if (paramKey == "bitcrusherDownsample") {
+            bitcrusherDownsample = (int)(1.0f + normVal * 31.0f);
+        } else if (paramKey == "bitcrusherMix") {
+            bitcrusherMix = normVal;
+        }
+    }
+
+    void setScaledParameterValue(int trackIdx, const juce::String& paramKey, float normVal) {
+        if (trackIdx < 0 || trackIdx >= 12) return;
+        
+        bool useAlt = params[trackIdx]["useAltSound"] > 0.5f;
+        float minVal = 0.0f;
+        float maxVal = 1.0f;
+        bool found = false;
+
+        if (paramKey == "volume") {
+            minVal = 0.0f; maxVal = 1.0f; found = true;
+        } else if (paramKey == "useAltSound") {
+            params[trackIdx][paramKey] = normVal > 0.5f ? 1.0f : 0.0f;
+            return;
+        } else if (trackIdx == 0) { // KICK
+            if (paramKey == "decay") { minVal = 0.05f; maxVal = useAlt ? 4.0f : 0.8f; found = true; }
+            else if (paramKey == "tone") { minVal = 30.0f; maxVal = 100.0f; found = true; }
+            else if (paramKey == "distortion") { minVal = 0.0f; maxVal = 1.0f; found = true; }
+        } else if (trackIdx == 1) { // SNARE
+            if (paramKey == "decay") { minVal = 0.05f; maxVal = 0.8f; found = true; }
+            else if (paramKey == "tone") { minVal = 100.0f; maxVal = 300.0f; found = true; }
+            else if (paramKey == "snappy") { minVal = 0.0f; maxVal = 1.0f; found = true; }
+        } else if (trackIdx == 2) { // CH HAT
+            if (paramKey == "decay") { minVal = 0.02f; maxVal = 0.2f; found = true; }
+            else if (paramKey == "tone") { minVal = 5000.0f; maxVal = 12000.0f; found = true; }
+            else if (paramKey == "pitch") { minVal = 0.2f; maxVal = 2.0f; found = true; }
+        } else if (trackIdx == 3) { // OP HAT
+            if (paramKey == "decay") { minVal = useAlt ? 1.0f : 0.1f; maxVal = useAlt ? 4.0f : 1.0f; found = true; }
+            else if (paramKey == "tone") { minVal = 5000.0f; maxVal = 12000.0f; found = true; }
+            else if (paramKey == "pitch") { minVal = 0.2f; maxVal = 2.0f; found = true; }
+        } else if (trackIdx == 4) { // RIDE
+            if (paramKey == "decay") { minVal = 0.2f; maxVal = 2.0f; found = true; }
+            else if (paramKey == "tone") { minVal = 200.0f; maxVal = 800.0f; found = true; }
+            else if (paramKey == "ring") { minVal = 0.0f; maxVal = 1.0f; found = true; }
+        } else if (trackIdx == 5) { // CLAP
+            if (paramKey == "decay") { minVal = 0.05f; maxVal = 0.8f; found = true; }
+            else if (paramKey == "tone") { minVal = 600.0f; maxVal = 2000.0f; found = true; }
+            else if (paramKey == "spread") { minVal = 5.0f; maxVal = 30.0f; found = true; }
+        } else if (trackIdx == 6) { // TOM
+            if (paramKey == "decay") { minVal = 0.1f; maxVal = 1.2f; found = true; }
+            else if (paramKey == "tone") { minVal = 50.0f; maxVal = 200.0f; found = true; }
+            else if (paramKey == "sweep") { minVal = 0.0f; maxVal = 1.0f; found = true; }
+        } else if (trackIdx == 7) { // BEEP
+            if (paramKey == "decay") { minVal = 0.05f; maxVal = 0.8f; found = true; }
+            else if (paramKey == "pitch") { minVal = 200.0f; maxVal = 3000.0f; found = true; }
+            else if (paramKey == "pulseWidth") { minVal = 0.0f; maxVal = 1.0f; found = true; }
+        } else if (trackIdx == 8) { // BLIP
+            if (paramKey == "decay") { minVal = 0.01f; maxVal = 0.2f; found = true; }
+            else if (paramKey == "pitch") { minVal = 1000.0f; maxVal = 5000.0f; found = true; }
+            else if (paramKey == "sweep") { minVal = 0.0f; maxVal = 1.0f; found = true; }
+        } else if (trackIdx == 9) { // BLOOP
+            if (paramKey == "decay") { minVal = 0.05f; maxVal = 0.6f; found = true; }
+            else if (paramKey == "pitch") { minVal = 200.0f; maxVal = 1500.0f; found = true; }
+            else if (paramKey == "speed") { minVal = 0.0f; maxVal = 1.0f; found = true; }
+        } else if (trackIdx == 10) { // CRUNCH
+            if (paramKey == "decay") { minVal = 0.1f; maxVal = 1.2f; found = true; }
+            else if (paramKey == "tone") { minVal = 100.0f; maxVal = 4000.0f; found = true; }
+            else if (paramKey == "crunch") { minVal = 0.0f; maxVal = 1.0f; found = true; }
+        } else if (trackIdx == 11) { // SAMPLE
+            if (paramKey == "decay") { minVal = 0.1f; maxVal = 5.0f; found = true; }
+            else if (paramKey == "tone") { minVal = 0.25f; maxVal = 4.0f; found = true; }
+            else if (paramKey == "startPoint") { minVal = 0.0f; maxVal = 0.95f; found = true; }
+            else if (paramKey == "endPoint") { minVal = 0.05f; maxVal = 1.0f; found = true; }
+        }
+
+        if (found) {
+            params[trackIdx][paramKey] = minVal + normVal * (maxVal - minVal);
+        }
+    }
+
     void togglePlay() {
         isPlaying = !isPlaying.load();
         if (isPlaying) {
@@ -1175,6 +1328,31 @@ public:
                 int note = msg.getNoteNumber();
                 int inst = note % 12;
                 triggerVoice(inst, 0.8f);
+            } else if (msg.isController()) {
+                int ccNum = msg.getControllerNumber();
+                int ccVal = msg.getControllerValue();
+                if (ccNum >= 0 && ccNum < 128) {
+                    const juce::ScopedLock sl(midiCcMutex);
+                    int track = learningCcParamTrack.load();
+                    if (track != -2) {
+                        midiCcMappings[ccNum].trackIdx = track;
+                        midiCcMappings[ccNum].paramKey = learningCcParamKey;
+                        learningCcParamTrack = -2;
+                        learningCcParamKey = "";
+                        triggerMidiCcUpdateFlag = true;
+                    } else {
+                        int mappedTrack = midiCcMappings[ccNum].trackIdx;
+                        if (mappedTrack != -2) {
+                            float normVal = ccVal / 127.0f;
+                            if (mappedTrack == -1) {
+                                setScaledGlobalParameterValue(midiCcMappings[ccNum].paramKey, normVal);
+                            } else if (mappedTrack >= 0 && mappedTrack < 12) {
+                                setScaledParameterValue(mappedTrack, midiCcMappings[ccNum].paramKey, normVal);
+                            }
+                            triggerMidiCcUpdateFlag = true;
+                        }
+                    }
+                }
             }
         }
 
@@ -1293,7 +1471,7 @@ public:
             }
             
             if (bitcrusherEnabled.load()) {
-                bitcrusher.process(crunchSumLeft, crunchSumRight, bitcrusherBits.load(), bitcrusherDownsample.load());
+                bitcrusher.process(crunchSumLeft, crunchSumRight, bitcrusherBits.load(), bitcrusherDownsample.load(), bitcrusherMix.load());
             }
             
             leftChannel[i] = drySumLeft + crunchSumLeft;
@@ -1354,6 +1532,7 @@ public:
         }
 
         // Master FX, Slam and visualization
+        updateSlamFilter(sampleRate);
         for (int i = 0; i < numSamples; ++i) {
             float fxLeft = leftChannel[i];
             float fxRight = rightChannel[i];
@@ -1379,7 +1558,7 @@ public:
             
             wetLeft = masterSlamComp.process(wetLeft, -32.0f, 8.0f, 5.0f, 80.0f, sampleRate);
             wetRight = masterSlamComp.process(wetRight, -32.0f, 8.0f, 5.0f, 80.0f, sampleRate);
-
+            
             float wetTarget = (slamActive.load() ? 1.0f : 0.0f);
             float mixStep = 1.0f / (float)(sampleRate * 0.15f); 
             if (slamWetMix < wetTarget) {
@@ -1387,10 +1566,13 @@ public:
             } else if (slamWetMix > wetTarget) {
                 slamWetMix = std::max(wetTarget, slamWetMix - mixStep);
             }
-
-            leftChannel[i] = (1.0f - slamWetMix) * dryLeft + slamWetMix * wetLeft + subBassSample * slamWetMix;
-            rightChannel[i] = (1.0f - slamWetMix) * dryRight + slamWetMix * wetRight + subBassSample * slamWetMix;
-
+            
+            float currentWet = slamWetMix.load() * slamMix.load();
+            float currentDry = 1.0f - currentWet;
+            
+            leftChannel[i] = currentDry * dryLeft + currentWet * wetLeft + subBassSample * currentWet;
+            rightChannel[i] = currentDry * dryRight + currentWet * wetRight + subBassSample * currentWet;
+            
             // Write outputs into Crossover visualizer buffers
             float monoSample = (leftChannel[i] + rightChannel[i]) * 0.5f;
             
@@ -1965,6 +2147,71 @@ public:
         slider.setLookAndFeel(nullptr);
     }
 
+    void setBindingContext(int trackIdx, const juce::String& paramKey, PhyzixAudioProcessor* p) {
+        this->track = trackIdx;
+        this->key = paramKey;
+        this->processor = p;
+        slider.addMouseListener(this, false);
+    }
+
+    int getMappedCc() const {
+        if (processor == nullptr) return -1;
+        const juce::ScopedLock sl(processor->midiCcMutex);
+        for (int i = 0; i < 128; ++i) {
+            if (processor->midiCcMappings[i].trackIdx == track &&
+                processor->midiCcMappings[i].paramKey == key) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    void mouseDown(const juce::MouseEvent& event) override {
+        if (event.mods.isRightButtonDown()) {
+            if (processor != nullptr && track != -2) {
+                juce::PopupMenu menu;
+                menu.addItem(1, "Learn MIDI CC");
+                menu.addItem(2, "Clear CC Binding");
+                
+                menu.showMenuAsync(juce::PopupMenu::Options(), [this](int result) {
+                    if (result == 1) {
+                        const juce::ScopedLock sl(processor->midiCcMutex);
+                        processor->learningCcParamTrack = track;
+                        processor->learningCcParamKey = key;
+                    } else if (result == 2) {
+                        const juce::ScopedLock sl(processor->midiCcMutex);
+                        for (int i = 0; i < 128; ++i) {
+                            if (processor->midiCcMappings[i].trackIdx == track &&
+                                processor->midiCcMappings[i].paramKey == key) {
+                                processor->midiCcMappings[i].trackIdx = -2;
+                                processor->midiCcMappings[i].paramKey = "";
+                            }
+                        }
+                        processor->triggerMidiCcUpdateFlag = true;
+                    }
+                });
+            }
+        }
+    }
+
+    void paintOverChildren(juce::Graphics& g) override {
+        if (processor != nullptr && processor->showMidiCcOverlay.load() && track != -2) {
+            int cc = getMappedCc();
+            juce::String text = (cc != -1) ? "CC " + juce::String(cc) : "CC --";
+            
+            auto bounds = getLocalBounds();
+            g.setColour(juce::Colours::black.withAlpha(0.75f));
+            g.fillRoundedRectangle(bounds.toFloat(), 6.0f);
+            
+            g.setColour(juce::Colours::orange);
+            g.drawRoundedRectangle(bounds.toFloat(), 6.0f, 1.5f);
+            
+            g.setColour(juce::Colours::white);
+            g.setFont(juce::FontOptions(11.0f, juce::Font::bold));
+            g.drawText(text, bounds, juce::Justification::centred, false);
+        }
+    }
+
     void resized() override {
         auto bounds = getLocalBounds();
         label.setBounds(bounds.removeFromTop(12));
@@ -1976,6 +2223,9 @@ public:
     }
 
     juce::Slider slider;
+    int track = -2;
+    juce::String key;
+    PhyzixAudioProcessor* processor = nullptr;
 
 private:
     juce::Label label;
@@ -2028,7 +2278,9 @@ public:
                         auto file = fc.getResult();
                         if (file.existsAsFile()) {
                             processor.loadSampleFile(file);
-                            processor.triggerVoice(11, 0.8f);
+                            if (!processor.isPlaying.load()) {
+                                processor.triggerVoice(11, 0.8f);
+                            }
                         }
                     });
             };
@@ -2041,7 +2293,9 @@ public:
                 modeButton.setButtonText(useAlt ? "B" : "A");
                 subLabel.setText(getInstrumentSubline(useAlt), juce::dontSendNotification);
                 updateKnobLabelsAndRanges(useAlt);
-                processor.triggerVoice(instIdx, 0.8f);
+                if (!processor.isPlaying.load()) {
+                    processor.triggerVoice(instIdx, 0.8f);
+                }
             };
         }
         addAndMakeVisible(modeButton);
@@ -2191,8 +2445,6 @@ public:
         {
             if (!processor.isPlaying.load()) {
                 processor.triggerVoice(instIdx, 0.8f);
-            } else if (event.originalComponent == this) {
-                processor.triggerVoice(instIdx, 0.8f);
             }
         }
     }
@@ -2272,6 +2524,7 @@ public:
               k->slider.onValueChange = [this, k, key = def.key]() {
                   processor.params[instIdx][key] = (float)k->slider.getValue();
               };
+              k->setBindingContext(instIdx, def.key, &processor);
               knobs.add(k);
               addAndMakeVisible(k);
           }
@@ -2920,18 +3173,21 @@ private:
             k1->slider.onValueChange = [this]() {
                 processor.distDrive = (float)k1->slider.getValue();
             };
+            k1->setBindingContext(-1, "distDrive", &processor);
             addAndMakeVisible(k1.get());
         } else if (fxType == 1) { // Filter
             k1 = std::make_unique<CustomKnob>("FREQ", 60.0f, 18000.0f, 1200.0f);
             k1->slider.onValueChange = [this]() {
                 processor.filterCutoff = (float)k1->slider.getValue();
             };
+            k1->setBindingContext(-1, "filterCutoff", &processor);
             addAndMakeVisible(k1.get());
 
             k2 = std::make_unique<CustomKnob>("RESONANCE", 0.1f, 10.0f, 2.0f);
             k2->slider.onValueChange = [this]() {
                 processor.filterResonance = (float)k2->slider.getValue();
             };
+            k2->setBindingContext(-1, "filterResonance", &processor);
             addAndMakeVisible(k2.get());
 
             typeCombo.addItem("Lowpass", 1);
@@ -2950,48 +3206,56 @@ private:
             k1->slider.onValueChange = [this]() {
                 processor.delayTime = (float)k1->slider.getValue();
             };
+            k1->setBindingContext(-1, "delayTime", &processor);
             addAndMakeVisible(k1.get());
 
             k2 = std::make_unique<CustomKnob>("FEEDBACK", 0.0f, 0.95f, 0.4f);
             k2->slider.onValueChange = [this]() {
                 processor.delayFeedback = (float)k2->slider.getValue();
             };
+            k2->setBindingContext(-1, "delayFeedback", &processor);
             addAndMakeVisible(k2.get());
 
             k3 = std::make_unique<CustomKnob>("MIX", 0.0f, 1.0f, 0.3f);
             k3->slider.onValueChange = [this]() {
                 processor.delayMix = (float)k3->slider.getValue();
             };
+            k3->setBindingContext(-1, "delayMix", &processor);
             addAndMakeVisible(k3.get());
         } else if (fxType == 3) { // Reverb
             k1 = std::make_unique<CustomKnob>("DECAY", 0.1f, 5.0f, 1.2f);
             k1->slider.onValueChange = [this]() {
                 processor.reverbDecay = (float)k1->slider.getValue();
             };
+            k1->setBindingContext(-1, "reverbDecay", &processor);
             addAndMakeVisible(k1.get());
 
             k2 = std::make_unique<CustomKnob>("MIX", 0.0f, 1.0f, 0.2f);
             k2->slider.onValueChange = [this]() {
                 processor.reverbMix = (float)k2->slider.getValue();
             };
+            k2->setBindingContext(-1, "reverbMix", &processor);
             addAndMakeVisible(k2.get());
         } else if (fxType == 4) { // Sidechain
             k1 = std::make_unique<CustomKnob>("RATIO", 0.0f, 1.0f, 0.8f);
             k1->slider.onValueChange = [this]() {
                 processor.sidechainRatio = (float)k1->slider.getValue();
             };
+            k1->setBindingContext(-1, "sidechainRatio", &processor);
             addAndMakeVisible(k1.get());
 
             k2 = std::make_unique<CustomKnob>("ATTACK", 0.001f, 0.1f, 0.01f);
             k2->slider.onValueChange = [this]() {
                 processor.sidechainAttack = (float)k2->slider.getValue();
             };
+            k2->setBindingContext(-1, "sidechainAttack", &processor);
             addAndMakeVisible(k2.get());
 
             k3 = std::make_unique<CustomKnob>("RELEASE", 0.01f, 1.0f, 0.15f);
             k3->slider.onValueChange = [this]() {
                 processor.sidechainRelease = (float)k3->slider.getValue();
             };
+            k3->setBindingContext(-1, "sidechainRelease", &processor);
             addAndMakeVisible(k3.get());
         } else if (fxType == 5) { // VST Host
             addAndMakeVisible(pluginCombo);
@@ -3072,7 +3336,8 @@ public:
         : processor(p),
           crunchActive("BITCRUSHER"),
           crunchBits("BITS", 1.0f, 16.0f, 8.0f),
-          crunchDS("DOWNSAMPLE", 1.0f, 32.0f, 1.0f)
+          crunchDS("DOWNSAMPLE", 1.0f, 32.0f, 1.0f),
+          crunchMix("MIX", 0.0f, 1.0f, 1.0f)
     {
         crunchActive.setClickingTogglesState(true);
         crunchActive.onClick = [this]() {
@@ -3083,12 +3348,20 @@ public:
         crunchBits.slider.onValueChange = [this]() {
             processor.bitcrusherBits = (int)crunchBits.slider.getValue();
         };
+        crunchBits.setBindingContext(-1, "bitcrusherBits", &processor);
         addAndMakeVisible(crunchBits);
 
         crunchDS.slider.onValueChange = [this]() {
             processor.bitcrusherDownsample = (int)crunchDS.slider.getValue();
         };
+        crunchDS.setBindingContext(-1, "bitcrusherDownsample", &processor);
         addAndMakeVisible(crunchDS);
+
+        crunchMix.slider.onValueChange = [this]() {
+            processor.bitcrusherMix = (float)crunchMix.slider.getValue();
+        };
+        crunchMix.setBindingContext(-1, "bitcrusherMix", &processor);
+        addAndMakeVisible(crunchMix);
 
         for (int i = 0; i < 6; ++i) {
             auto* card = new ModularFXCard(i, processor);
@@ -3101,6 +3374,7 @@ public:
         crunchActive.setToggleState(processor.bitcrusherEnabled.load(), juce::dontSendNotification);
         crunchBits.slider.setValue(processor.bitcrusherBits.load(), juce::dontSendNotification);
         crunchDS.slider.setValue(processor.bitcrusherDownsample.load(), juce::dontSendNotification);
+        crunchMix.slider.setValue(processor.bitcrusherMix.load(), juce::dontSendNotification);
 
         for (int i = 0; i < 6; ++i) {
             fxCards[i]->updateControlsFromProcessor();
@@ -3132,9 +3406,10 @@ public:
         auto crBounds = bounds.removeFromLeft(200).reduced(8);
         
         crunchActive.setBounds(crBounds.removeFromTop(24).reduced(6, 2));
-        int h = crBounds.getHeight() / 2;
+        int h = crBounds.getHeight() / 3;
         crunchBits.setBounds(crBounds.removeFromTop(h).reduced(8, 2));
-        crunchDS.setBounds(crBounds.reduced(8, 2));
+        crunchDS.setBounds(crBounds.removeFromTop(h).reduced(8, 2));
+        crunchMix.setBounds(crBounds.reduced(8, 2));
 
         auto order = processor.fxChainOrder;
         int cardW = bounds.getWidth() / 6;
@@ -3155,6 +3430,7 @@ private:
     juce::TextButton crunchActive;
     CustomKnob crunchBits;
     CustomKnob crunchDS;
+    CustomKnob crunchMix;
     juce::OwnedArray<ModularFXCard> fxCards;
 
     juce::String getFXName(int fxType) const {
@@ -3377,8 +3653,8 @@ private:
 "\n"
 "3. SLAM THE DOOR CONTROL\n"
 "------------------------\n"
-" - SLAM THE DOOR BUTTON: Routes master bus through heavy 320Hz lowpass filter\n"
-"   and triggers a deep sub-bass sweep (30-55Hz) with sidechained compression.\n"
+" - SLAM THE DOOR BUTTON: Routes master bus through heavy 450Hz lowpass filter\n"
+"   and triggers a deep sub-bass sweep (30-55Hz) with sidechained compression (-32dB, 8:1 ratio). Triggers on beat boundaries; sub-bass triggers on bar starts. Adjust Slam Mix to blend.\n"
 " - LATCH CHECKBOX: Sets button behavior:\n"
 "    * LATCH CHECKED: SLAM acts as a toggle switch (remains active when clicked).\n"
 "    * LATCH UNCHECKED: SLAM is momentary (only active while mouse is held down).\n"
@@ -3386,7 +3662,7 @@ private:
 "4. PANEL COLLAPSE BUTTONS\n"
 "-------------------------\n"
 " - COLLAPSE EDITOR: Toggles visibility of the sequencer grid/editor tabs.\n"
-" - COLLAPSE DRUMS: Toggles visibility of the 12 bottom drum sound cards.\n"
+" - COLLAPSE DRUMS: Toggles visibility of the 12 bottom drum sound cards.\n\n5. MIDI CC MAPPING & OVERLAYS\n-----------------------------\n - RIGHT-CLICK: Open context menu on any dial/knob to Learn CC or Clear CC binding.\n - [SHOW MIDI CC] BUTTON: Displays CC overlay badges over all mapped dials.\n"
 "================================================================================";
 
             case 1:
@@ -3524,7 +3800,7 @@ private:
 " - ORDER SHIFTING: Click '<' or '>' on any card to move it. Signal flows left to right.\n"
 " - ACTIVE TOGGLE: Click the checkbox inside each card to bypass or enable it.\n"
 " - DISTORTION: Wavefolding saturator with Drive and Tone dials.\n"
-" - FILTER: Resonant biquad filter supporting Lowpass, Highpass, and Bandpass.\n"
+" - FILTER: Resonant biquad filter supporting Lowpass, Highpass, Bandpass, Comb, Formant, Ring Mod, Phaser, 24dB LP, Notch, and Peaking EQ.\n"
 " - DELAY: Stereo delay with Time, Feedback, and Mix controls.\n"
 " - REVERB: Stereo algorithmic room simulator with width, size, and damp controls.\n"
 " - SIDECHAIN: Compressor triggered by Kick (Ch 0). Adjust Threshold and Ratio.\n"
@@ -3535,7 +3811,7 @@ private:
 " - BYP ON BUTTON: Toggle on a drum voice card to bypass the Bitcrusher for that voice.\n"
 " - CRUNCH ACTIVE: Enable/bypass the global bitcrusher in the effects bank.\n"
 " - CRUNCH BITS: Adjust bit depth reduction (1 to 16 bits) for classic digital grit.\n"
-" - CRUNCH DOWNSAMPLE: Adjust frequency downsampling (1 to 32x downsample rate).\n"
+" - CRUNCH DOWNSAMPLE: Adjust frequency downsampling (1 to 32x downsample rate).\n - CRUNCH MIX: Adjust dry/wet blend of the bitcrushed signal.\n"
 "\n"
 "3. VST HOST INSERT CARD (CARD 6)\n"
 "--------------------------------\n"
@@ -3627,6 +3903,7 @@ public:
         masterVolSlider->slider.onValueChange = [this]() {
             processor.masterVolume = (float)masterVolSlider->slider.getValue();
         };
+        masterVolSlider->setBindingContext(-1, "masterVolume", &processor);
         addAndMakeVisible(masterVolSlider.get());
         // A. Header Elements
         playButton.setButtonText("PLAY");
@@ -3658,8 +3935,7 @@ public:
             updateSequencerGridUI();
             updateAllDrumCardSliders();
             effectsPanel.updateControlsFromProcessor();
-            bpmSlider->slider.setValue(processor.bpm.load(), juce::dontSendNotification);
-            swingSlider->slider.setValue(processor.swing.load(), juce::dontSendNotification);
+            updateMainSlidersFromProcessor();
             stepsCombo.setText(juce::String(processor.stepsCount.load()) + " Steps", juce::dontSendNotification);
         };
         addAndMakeVisible(presetCombo);
@@ -3689,8 +3965,7 @@ public:
                     updateSequencerGridUI();
                     updateAllDrumCardSliders();
                     effectsPanel.updateControlsFromProcessor();
-                    bpmSlider->slider.setValue(processor.bpm.load(), juce::dontSendNotification);
-                    swingSlider->slider.setValue(processor.swing.load(), juce::dontSendNotification);
+                    updateMainSlidersFromProcessor();
                     stepsCombo.setText(juce::String(processor.stepsCount.load()) + " Steps", juce::dontSendNotification);
                     timeSigCombo.setText(processor.timeSignature, juce::dontSendNotification);
                 }
@@ -3732,12 +4007,14 @@ public:
         bpmSlider->slider.onValueChange = [this]() {
             processor.bpm = (int)bpmSlider->slider.getValue();
         };
+        bpmSlider->setBindingContext(-1, "bpm", &processor);
         addAndMakeVisible(bpmSlider.get());
 
         swingSlider = std::make_unique<CustomKnob>("SWING", 0.0f, 1.0f, 0.0f);
         swingSlider->slider.onValueChange = [this]() {
             processor.swing = (float)swingSlider->slider.getValue();
         };
+        swingSlider->setBindingContext(-1, "swing", &processor);
         addAndMakeVisible(swingSlider.get());
 
         slamButton.setButtonText("SLAM THE DOOR");
@@ -3762,6 +4039,7 @@ public:
         latchCheck.setLookAndFeel(&lnf);
         latchCheck.onClick = [this]() {
             bool isLatch = latchCheck.getToggleState();
+            processor.slamLatched = isLatch;
             slamButton.setClickingTogglesState(isLatch);
             if (!isLatch) {
                 slamButton.setToggleState(false, juce::dontSendNotification);
@@ -3769,6 +4047,27 @@ public:
             }
         };
         addAndMakeVisible(latchCheck);
+
+        doorTypeCombo.addItem("Hollow Door", 1);
+        doorTypeCombo.addItem("Heavy Door", 2);
+        doorTypeCombo.addItem("Aluminum Door", 3);
+        doorTypeCombo.addItem("Steel Door", 4);
+        doorTypeCombo.addItem("Glass Door", 5);
+        doorTypeCombo.addItem("Submarine Hatch", 6);
+        doorTypeCombo.addItem("Sci-Fi Airlock", 7);
+        doorTypeCombo.addItem("Cathedral Gate", 8);
+        doorTypeCombo.setSelectedItemIndex(0, juce::dontSendNotification);
+        doorTypeCombo.onChange = [this]() {
+            processor.doorType = doorTypeCombo.getSelectedItemIndex();
+        };
+        addAndMakeVisible(doorTypeCombo);
+
+        slamMixSlider = std::make_unique<CustomKnob>("MIX", 0.0f, 1.0f, 1.0f);
+        slamMixSlider->slider.onValueChange = [this]() {
+            processor.slamMix = (float)slamMixSlider->slider.getValue();
+        };
+        slamMixSlider->setBindingContext(-1, "slamMix", &processor);
+        addAndMakeVisible(slamMixSlider.get());
 
         // B. Momentary Fills Override
         fillPanel.setText("MOMENTARY DRUM FILL OVERRIDE", juce::dontSendNotification);
@@ -3798,7 +4097,16 @@ public:
         };
         addAndMakeVisible(fillPatternCombo);
 
-        midiCCButton.setButtonText("LEARN MIDI CC");
+        midiCCButton.setButtonText("SHOW MIDI CC");
+        midiCCButton.setClickingTogglesState(true);
+        midiCCButton.setToggleState(processor.showMidiCcOverlay.load(), juce::dontSendNotification);
+        midiCCButton.setColour(juce::TextButton::buttonColourId, processor.showMidiCcOverlay.load() ? juce::Colour(0xffd35400) : juce::Colour(0xff2b2927));
+        midiCCButton.onClick = [this]() {
+            bool showOverlay = midiCCButton.getToggleState();
+            processor.showMidiCcOverlay = showOverlay;
+            midiCCButton.setColour(juce::TextButton::buttonColourId, showOverlay ? juce::Colour(0xffd35400) : juce::Colour(0xff2b2927));
+            repaint();
+        };
         addAndMakeVisible(midiCCButton);
 
         // C. Crossover Oscilloscope
@@ -4013,6 +4321,19 @@ public:
         }
     }
 
+    void updateEffectsSlidersFromProcessor() {
+        effectsPanel.updateControlsFromProcessor();
+    }
+
+    void updateMainSlidersFromProcessor() {
+        bpmSlider->slider.setValue(processor.bpm.load(), juce::dontSendNotification);
+        swingSlider->slider.setValue(processor.swing.load(), juce::dontSendNotification);
+        masterVolSlider->slider.setValue(processor.masterVolume, juce::dontSendNotification);
+        slamMixSlider->slider.setValue(processor.slamMix.load(), juce::dontSendNotification);
+        doorTypeCombo.setSelectedItemIndex(processor.doorType.load(), juce::dontSendNotification);
+        latchCheck.setToggleState(processor.slamLatched.load(), juce::dontSendNotification);
+    }
+
     void updateNoteControlSelection() {
         pianoRoll.updateSelection();
     }
@@ -4120,13 +4441,15 @@ public:
         timeSigCombo.setBounds(300, 40, 65, 30);
         stepsCombo.setBounds(375, 40, 95, 30);
         
-        presetCombo.setBounds(485, 40, 170, 30);
-        userPresetCombo.setBounds(665, 40, 160, 30);
-        presetNameEditor.setBounds(835, 40, 120, 30);
-        savePresetButton.setBounds(965, 40, 60, 30);
+        presetCombo.setBounds(485, 40, 165, 30);
+        userPresetCombo.setBounds(660, 40, 145, 30);
+        presetNameEditor.setBounds(815, 40, 90, 30);
+        savePresetButton.setBounds(915, 40, 50, 30);
         
-        slamButton.setBounds(1035, 40, 130, 30);
-        latchCheck.setBounds(1175, 45, 85, 20);
+        slamButton.setBounds(975, 40, 100, 30);
+        latchCheck.setBounds(1085, 45, 50, 20);
+        doorTypeCombo.setBounds(1140, 40, 80, 30);
+        slamMixSlider->setBounds(1225, 30, 45, 50);
 
         // Row 2 (Y=85)
         fillPanel.setBounds(20, 87, 200, 20);
@@ -4134,8 +4457,8 @@ public:
         fillPatternCombo.setBounds(300, 85, 150, 28);
         midiCCButton.setBounds(460, 85, 130, 28);
         
-        collapseEditorBtn.setBounds(890, 85, 170, 28);
-        collapseDrumsBtn.setBounds(1070, 85, 180, 28);
+        collapseEditorBtn.setBounds(700, 85, 170, 28);
+        collapseDrumsBtn.setBounds(880, 85, 180, 28);
 
         // Oscilloscope (Y=125)
         oscilloscope.setBounds(20, 125, 1240, 50);
@@ -4276,6 +4599,8 @@ private:
     
     juce::TextButton slamButton;
     juce::ToggleButton latchCheck;
+    juce::ComboBox doorTypeCombo;
+    std::unique_ptr<CustomKnob> slamMixSlider;
 
     juce::Label fillPanel;
     juce::TextButton fillButton;
@@ -4365,6 +4690,14 @@ public:
             mainContent.updatePlayButtonText();
             mainContent.updateSequencerGridUI();
             repaint();
+        }
+
+        // Update UI knobs from processor when MIDI CC changes
+        if (processor.triggerMidiCcUpdateFlag.exchange(false)) {
+            mainContent.updateMainSlidersFromProcessor();
+            mainContent.updateAllDrumCardSliders();
+            mainContent.updateEffectsSlidersFromProcessor();
+            mainContent.repaint();
         }
     }
 

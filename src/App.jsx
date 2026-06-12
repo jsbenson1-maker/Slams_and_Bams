@@ -27,6 +27,50 @@ import { midiManager } from './midi';
 import Knob from './Knob';
 import { exportToMidi } from './midiExport';
 
+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+const SCALE_INTERVALS = {
+  "Chromatic": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  "Major": [0, 2, 4, 5, 7, 9, 11],
+  "Minor": [0, 2, 3, 5, 7, 8, 10],
+  "Dorian": [0, 2, 3, 5, 7, 9, 10],
+  "Phrygian": [0, 1, 3, 5, 7, 8, 10],
+  "Lydian": [0, 2, 4, 6, 7, 9, 11],
+  "Mixolydian": [0, 2, 4, 5, 7, 9, 10],
+  "Locrian": [0, 1, 3, 5, 6, 8, 10],
+  "Pentatonic Maj": [0, 2, 4, 7, 9],
+  "Pentatonic Min": [0, 3, 5, 7, 10]
+};
+
+function isSemitoneInScale(semitone, keyRoot, intervals) {
+  let noteInOctave = (60 + semitone - keyRoot) % 12;
+  if (noteInOctave < 0) noteInOctave += 12;
+  return intervals.includes(noteInOctave);
+}
+
+function snapSemitoneToScale(semitone, keyRoot, intervals) {
+  let bestSemitone = semitone;
+  let minDistance = 100;
+  for (let candidate = -24; candidate <= 24; ++candidate) {
+    if (isSemitoneInScale(candidate, keyRoot, intervals)) {
+      let dist = Math.abs(candidate - semitone);
+      if (dist < minDistance) {
+        minDistance = dist;
+        bestSemitone = candidate;
+      }
+    }
+  }
+  return bestSemitone;
+}
+
+function getNoteName(semitone) {
+  const midiNote = 60 + semitone;
+  const octave = Math.floor(midiNote / 12) - 1;
+  let noteIdx = midiNote % 12;
+  if (noteIdx < 0) noteIdx += 12;
+  return NOTE_NAMES[noteIdx] + octave;
+}
+
 // 12 Synthesized Instruments definition
 const INSTRUMENTS = [
   { id: 'kick', name: 'Kick', type: 'Analog Sub', color: '#e06c43', glow: 'rgba(224,108,67,0.25)' },
@@ -488,6 +532,107 @@ const FACTORY_PRESETS = [
     ),
     bloopPitches: [0.2, 0.5, 0.3, 0.25, 0.5, 0.4, 0.35, 0.3, 0.5, 0.2, 0.5, 0.3],
     beepPitches: [0.5, 0.55, 0.6, 0.45, 0.5, 0.55, 0.6, 0.45, 0.5, 0.55, 0.6, 0.45]
+  },
+  {
+    name: "Ambient Pluck (90 BPM)",
+    bpm: 90,
+    stepsCount: 64,
+    swing: 0.1,
+    gridData: makeFactoryPresetGrid(
+      [0, 8],                                        // Kick
+      [4, 12],                                       // Snare
+      [0, 2, 4, 6, 8, 10, 12, 14],                   // Closed Hat
+      [6, 14],                                       // Open Hat
+      [], [],
+      [0, 2, 4, 6, 8, 10, 12, 14],                   // Tom (pluck melody)
+      [], [], [], [], []
+    ),
+    tomPitches: new Array(64).fill(0.5).map((v, i) => [0.3, 0.4, 0.5, 0.6, 0.4, 0.5, 0.7, 0.5][i % 8])
+  },
+  {
+    name: "Chiptune Dance (128 BPM)",
+    bpm: 128,
+    stepsCount: 64,
+    swing: 0.0,
+    gridData: makeFactoryPresetGrid(
+      [0, 4, 8, 12],                                 // Kick
+      [4, 12],                                       // Snare
+      [0, 2, 4, 6, 8, 10, 12, 14],                   // Closed Hat
+      [2, 6, 10, 14],                                // Open Hat
+      [], [], [],
+      [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], // Beep (chiptune arpeggio)
+      [], [], [], []
+    ),
+    beepPitches: new Array(64).fill(0.5).map((v, i) => [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45][i % 16])
+  },
+  {
+    name: "Afrobeat Melodic (105 BPM)",
+    bpm: 105,
+    stepsCount: 64,
+    swing: 0.2,
+    gridData: makeFactoryPresetGrid(
+      [0, 6, 10],                                    // Kick
+      [4, 12],                                       // Snare
+      [0, 2, 4, 6, 8, 10, 12, 14],                   // Closed Hat
+      [6, 14],                                       // Open Hat
+      [], [], [], [], [],
+      [0, 3, 5, 8, 10, 13, 15],                      // Bloop (ethnic melody)
+      [], []
+    ),
+    bloopPitches: new Array(64).fill(0.5).map((v, i) => [0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7][i % 8])
+  },
+  {
+    name: "Lofi Piano Chill (80 BPM)",
+    bpm: 80,
+    stepsCount: 64,
+    swing: 0.18,
+    gridData: makeFactoryPresetGrid(
+      [0, 8, 11],                                    // Kick
+      [4, 12],                                       // Snare
+      [0, 2, 4, 6, 8, 10, 12, 14],                   // Closed Hat
+      [6, 14],                                       // Open Hat
+      [], [], [],
+      [0, 4, 8, 12],                                 // Beep (chord root)
+      [2, 6, 10, 14],                                // Blip (chord third)
+      [], [], []
+    ),
+    beepPitches: new Array(64).fill(0.5).map((v, i) => [0.3, 0.35, 0.4, 0.35][i % 4]),
+    blipPitches: new Array(64).fill(0.5).map((v, i) => [0.5, 0.55, 0.6, 0.55][i % 4])
+  },
+  {
+    name: "Turkish Saz Trap (140 BPM)",
+    bpm: 140,
+    stepsCount: 64,
+    swing: 0.05,
+    gridData: makeFactoryPresetGrid(
+      [0, 8, 10],                                    // Kick
+      [6, 14],                                       // Snare
+      [0, 2, 4, 6, 8, 10, 12, 14],                   // Closed Hat
+      [10],                                          // Open Hat
+      [], [], [], [], [],
+      [2, 5, 8, 11, 14],                             // Bloop (slide melody)
+      [], []
+    ),
+    bloopPitches: new Array(64).fill(0.5).map((v, i) => [0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6][i % 8])
+  },
+  {
+    name: "Symphonic Trap (130 BPM)",
+    bpm: 130,
+    stepsCount: 64,
+    swing: 0.0,
+    gridData: makeFactoryPresetGrid(
+      [0, 8, 11],                                    // Kick
+      [4, 12],                                       // Snare
+      [0, 2, 4, 6, 8, 10, 12, 14],                   // Closed Hat
+      [6, 14],                                       // Open Hat
+      [], [], [],
+      [0, 4, 8, 12],                                 // Beep (high lead)
+      [],
+      [0, 2, 4, 6, 8, 10, 12, 14],                   // Bloop (mid lead)
+      [], []
+    ),
+    beepPitches: new Array(64).fill(0.5).map((v, i) => [0.6, 0.65, 0.7, 0.65, 0.8, 0.75, 0.7, 0.75][i % 8]),
+    bloopPitches: new Array(64).fill(0.5).map((v, i) => [0.4, 0.45, 0.5, 0.45, 0.6, 0.55, 0.5, 0.55][i % 8])
   }
 ];
 
@@ -602,6 +747,17 @@ export default function App() {
   const [bitcrusherEnabled, setBitcrusherEnabled] = useState(true);
   const [bitcrusherBits, setBitcrusherBits] = useState(8);
   const [bitcrusherDownsample, setBitcrusherDownsample] = useState(1);
+  const [bitcrusherMix, setBitcrusherMix] = useState(1.0);
+  const [slamMix, setSlamMix] = useState(1.0);
+  const [doorType, setDoorType] = useState(0);
+  const [showMidiCcOverlay, setShowMidiCcOverlay] = useState(false);
+  const [contextMenu, setContextMenu] = useState(null); // { x, y, channelId, paramKey }
+  const [pitchKey, setPitchKey] = useState("C");
+  const [pitchScale, setPitchScale] = useState("Chromatic");
+  const svgRef = useRef(null);
+  const [isSvgDragging, setIsSvgDragging] = useState(false);
+  const [hoveredSvgStep, setHoveredSvgStep] = useState(null);
+  const [hoveredSvgSemitone, setHoveredSvgSemitone] = useState(null);
 
   const [fxEnabled, setFxEnabled] = useState({
     distortion: false,
@@ -1141,12 +1297,87 @@ export default function App() {
     };
 
     midiManager.onCcValueChange = (channelId, paramKey, normalizedVal) => {
-      // Direct MIDI learn catch for momentary drum fills
-      if (channelId === -1 && paramKey === 'fill') {
-        const active = normalizedVal > 0;
-        setFillActive(active);
-        audioEngine.fillActive = active;
-        logSession(`MIDI Triggered Fill: ${active ? 'ACTIVE' : 'DEACTIVATED'}`, "INFO");
+      if (channelId === -1) {
+        if (paramKey === 'fill') {
+          const active = normalizedVal > 0;
+          setFillActive(active);
+          audioEngine.fillActive = active;
+          logSession(`MIDI Triggered Fill: ${active ? 'ACTIVE' : 'DEACTIVATED'}`, "INFO");
+          return;
+        }
+        
+        let realVal = normalizedVal;
+        if (paramKey === 'bpm') {
+          realVal = Math.round(20.0 + normalizedVal * 220.0);
+          setBpm(realVal);
+          audioEngine.bpm = realVal;
+        } else if (paramKey === 'swing') {
+          realVal = normalizedVal;
+          setSwing(realVal);
+          audioEngine.swing = realVal;
+        } else if (paramKey === 'masterVolume') {
+          realVal = normalizedVal * 1.5;
+          setMasterVolume(realVal);
+          audioEngine.setMasterVolume(realVal);
+        } else if (paramKey === 'slamMix') {
+          realVal = normalizedVal;
+          setSlamMix(realVal);
+          audioEngine.setSlamMix(realVal);
+        } else if (paramKey === 'bitcrusherBits') {
+          realVal = Math.round(1.0 + normalizedVal * 15.0);
+          setBitcrusherBits(realVal);
+          audioEngine.bitcrusherBits = realVal;
+        } else if (paramKey === 'bitcrusherDownsample') {
+          realVal = Math.round(1.0 + normalizedVal * 31.0);
+          setBitcrusherDownsample(realVal);
+          audioEngine.bitcrusherDownsample = realVal;
+        } else if (paramKey === 'bitcrusherMix') {
+          realVal = normalizedVal;
+          setBitcrusherMix(realVal);
+          audioEngine.bitcrusherMix = realVal;
+        } else if (paramKey === 'distDrive') {
+          setFxParams(prev => ({ ...prev, distortion: { ...prev.distortion, drive: realVal } }));
+          audioEngine.updateFx('distortion', 'drive', realVal);
+        } else if (paramKey === 'filterCutoff') {
+          realVal = 60 + normalizedVal * 17940;
+          setFxParams(prev => ({ ...prev, filter: { ...prev.filter, cutoff: realVal } }));
+          audioEngine.updateFx('filter', 'cutoff', realVal);
+        } else if (paramKey === 'filterResonance') {
+          realVal = 0.1 + normalizedVal * 9.9;
+          setFxParams(prev => ({ ...prev, filter: { ...prev.filter, resonance: realVal } }));
+          audioEngine.updateFx('filter', 'resonance', realVal);
+        } else if (paramKey === 'delayTime') {
+          realVal = 0.05 + normalizedVal * 1.95;
+          setFxParams(prev => ({ ...prev, delay: { ...prev.delay, time: realVal } }));
+          audioEngine.updateFx('delay', 'time', realVal);
+        } else if (paramKey === 'delayFeedback') {
+          realVal = normalizedVal * 0.95;
+          setFxParams(prev => ({ ...prev, delay: { ...prev.delay, feedback: realVal } }));
+          audioEngine.updateFx('delay', 'feedback', realVal);
+        } else if (paramKey === 'delayMix') {
+          setFxParams(prev => ({ ...prev, delay: { ...prev.delay, mix: realVal } }));
+          audioEngine.updateFx('delay', 'mix', realVal);
+        } else if (paramKey === 'reverbDecay') {
+          realVal = 0.1 + normalizedVal * 4.9;
+          setFxParams(prev => ({ ...prev, reverb: { ...prev.reverb, decay: realVal } }));
+          audioEngine.updateFx('reverb', 'decay', realVal);
+        } else if (paramKey === 'reverbMix') {
+          setFxParams(prev => ({ ...prev, reverb: { ...prev.reverb, mix: realVal } }));
+          audioEngine.updateFx('reverb', 'mix', realVal);
+        } else if (paramKey === 'sidechainRatio') {
+          setFxParams(prev => ({ ...prev, sidechain: { ...prev.sidechain, ratio: realVal } }));
+          audioEngine.updateFx('sidechain', 'ratio', realVal);
+        } else if (paramKey === 'sidechainAttack') {
+          realVal = 0.001 + normalizedVal * 0.099;
+          setFxParams(prev => ({ ...prev, sidechain: { ...prev.sidechain, attack: realVal } }));
+          audioEngine.updateFx('sidechain', 'attack', realVal);
+        } else if (paramKey === 'sidechainRelease') {
+          realVal = 0.01 + normalizedVal * 0.99;
+          setFxParams(prev => ({ ...prev, sidechain: { ...prev.sidechain, release: realVal } }));
+          audioEngine.updateFx('sidechain', 'release', realVal);
+        }
+        
+        autoSave(gridData, params, tomPitches, { bpm, stepsCount }, beepPitches, blipPitches, bloopPitches, crunchBypass, swing, getFxSaveState());
         return;
       }
 
@@ -2071,6 +2302,139 @@ export default function App() {
     logSession(`Cleared MIDI CC binding for track ${channelId} param ${paramKey}`, "INFO");
   };
 
+  const handleKnobContextMenu = (e, channelId, paramKey) => {
+    e.preventDefault();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      channelId,
+      paramKey
+    });
+  };
+
+  const applyPitchPreset = (presetName, keyRootIdx, scaleName) => {
+    if (!activePitches || !setActivePitches) return;
+    const intervals = SCALE_INTERVALS[scaleName] || SCALE_INTERVALS["Chromatic"];
+    
+    let nextPitches = Array.from({ length: 64 }, () => 0.5);
+    
+    if (presetName === 'arpeggio_up') {
+      const pattern = [0, 4, 7, 12];
+      for (let s = 0; s < 64; ++s) {
+        const semitone = pattern[s % 4] + 12 * Math.floor((s % 16) / 4);
+        const snapped = snapSemitoneToScale(semitone, keyRootIdx, intervals);
+        nextPitches[s] = 0.5 + snapped / 48.0;
+      }
+    } else if (presetName === 'descending') {
+      for (let s = 0; s < 64; ++s) {
+        const semitone = 12 - (s % 16);
+        const snapped = snapSemitoneToScale(semitone, keyRootIdx, intervals);
+        nextPitches[s] = 0.5 + snapped / 48.0;
+      }
+    } else if (presetName === 'pentatonic') {
+      const pattern = [0, 3, 5, 7, 10, 7, 5, 3];
+      for (let s = 0; s < 64; ++s) {
+        const semitone = pattern[s % 8];
+        const snapped = snapSemitoneToScale(semitone, keyRootIdx, intervals);
+        nextPitches[s] = 0.5 + snapped / 48.0;
+      }
+    } else if (presetName === 'octave') {
+      for (let s = 0; s < 64; ++s) {
+        const semitone = (s % 2 === 0) ? 0 : 12;
+        const snapped = snapSemitoneToScale(semitone, keyRootIdx, intervals);
+        nextPitches[s] = 0.5 + snapped / 48.0;
+      }
+    } else if (presetName === 'chaos') {
+      for (let s = 0; s < 64; ++s) {
+        const semitone = Math.floor(Math.random() * 25) - 12;
+        const snapped = snapSemitoneToScale(semitone, keyRootIdx, intervals);
+        nextPitches[s] = 0.5 + snapped / 48.0;
+      }
+    } else if (presetName === 'flat') {
+      for (let s = 0; s < 64; ++s) {
+        nextPitches[s] = 0.5;
+      }
+    }
+    
+    setActivePitches(nextPitches);
+    
+    if (selectedInstrument === 6) audioEngine.tomStepPitches = nextPitches;
+    else if (selectedInstrument === 7) audioEngine.beepStepPitches = nextPitches;
+    else if (selectedInstrument === 8) audioEngine.blipStepPitches = nextPitches;
+    else if (selectedInstrument === 9) audioEngine.bloopStepPitches = nextPitches;
+    
+    autoSave(gridData, params, tomPitches, { bpm, stepsCount }, beepPitches, blipPitches, bloopPitches, crunchBypass, swing, getFxSaveState());
+  };
+
+  const handleSvgInteraction = (e) => {
+    if (!svgRef.current || !activePitches || !setActivePitches) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    const graphWidth = rect.width - 120;
+    if (x < 120) return;
+    
+    const stepWidth = graphWidth / stepsCount;
+    let step = Math.floor((x - 120) / stepWidth);
+    step = Math.max(0, Math.min(stepsCount - 1, step));
+    
+    let val = 1.0 - (y / rect.height);
+    val = Math.max(0.0, Math.min(1.0, val));
+    
+    const keyRootIdx = NOTE_NAMES.indexOf(pitchKey);
+    const intervals = SCALE_INTERVALS[pitchScale] || SCALE_INTERVALS["Chromatic"];
+    const semitone = Math.round((val - 0.5) * 48.0);
+    const snapped = snapSemitoneToScale(semitone, keyRootIdx, intervals);
+    const snappedVal = 0.5 + snapped / 48.0;
+    
+    setActivePitches(prev => {
+      const next = [...prev];
+      next[step] = snappedVal;
+      if (selectedInstrument === 6) audioEngine.tomStepPitches = next;
+      else if (selectedInstrument === 7) audioEngine.beepStepPitches = next;
+      else if (selectedInstrument === 8) audioEngine.blipStepPitches = next;
+      else if (selectedInstrument === 9) audioEngine.bloopStepPitches = next;
+      return next;
+    });
+    
+    setHoveredSvgStep(step);
+    setHoveredSvgSemitone(snapped);
+  };
+
+  const handleSvgMouseMove = (e) => {
+    if (!svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    const graphWidth = rect.width - 120;
+    if (x < 120) {
+      setHoveredSvgStep(null);
+      setHoveredSvgSemitone(null);
+      return;
+    }
+    
+    const stepWidth = graphWidth / stepsCount;
+    let step = Math.floor((x - 120) / stepWidth);
+    step = Math.max(0, Math.min(stepsCount - 1, step));
+    
+    let val = 1.0 - (y / rect.height);
+    val = Math.max(0.0, Math.min(1.0, val));
+    
+    const keyRootIdx = NOTE_NAMES.indexOf(pitchKey);
+    const intervals = SCALE_INTERVALS[pitchScale] || SCALE_INTERVALS["Chromatic"];
+    const semitone = Math.round((val - 0.5) * 48.0);
+    const snapped = snapSemitoneToScale(semitone, keyRootIdx, intervals);
+    
+    setHoveredSvgStep(step);
+    setHoveredSvgSemitone(snapped);
+    
+    if (isSvgDragging) {
+      handleSvgInteraction(e);
+    }
+  };
+
   // Custom audio file loading handler
   const handleFileLoad = (e) => {
     const file = e.target.files[0];
@@ -2233,7 +2597,11 @@ export default function App() {
   // Select focus instrument
   const handleInstrumentSelect = (index) => {
     setSelectedInstrument(index);
-    triggerSound(index);
+    if (!isPlaying) {
+      triggerSound(index);
+    } else {
+      flashPad(index);
+    }
     logSession(`Selected instrument edit target: ${INSTRUMENTS[index].name}`, "INFO");
 
     // Add step record on click if Step Record is active
@@ -2300,6 +2668,19 @@ export default function App() {
     }
     
     autoSave(gridData, params, tomPitches, { bpm, stepsCount }, beepPitches, blipPitches, bloopPitches, crunchBypass, swing, getFxSaveState({ bitcrusherDownsample: bounded }));
+  };
+
+  const handleBitcrusherMix = (val) => {
+    audioEngine.init();
+    const bounded = Math.max(0.0, Math.min(1.0, val));
+    setBitcrusherMix(bounded);
+    audioEngine.bitcrusherMix = bounded;
+    
+    if (isRecordingPitchRef.current && isPlaying) {
+      audioEngine.recordFxAutomation('bitcrusher', 'mix', currentStepRef.current, bounded);
+    }
+    
+    autoSave(gridData, params, tomPitches, { bpm, stepsCount }, beepPitches, blipPitches, bloopPitches, crunchBypass, swing, getFxSaveState({ bitcrusherMix: bounded }));
   };
 
   const handleFxToggle = (key) => {
@@ -2699,6 +3080,8 @@ export default function App() {
                             tooltip={overriddenK.tooltip}
                             isAutomated={getInstrumentAutomationInfo(idx, k.key).isAutomated}
                             onClearAutomation={getInstrumentAutomationInfo(idx, k.key).onClearAutomation}
+                            showMidiCcOverlay={showMidiCcOverlay}
+                            onContextMenu={(e) => handleKnobContextMenu(e, idx, k.key)}
                           />
                         );
                       })}
@@ -3042,6 +3425,12 @@ export default function App() {
                         valueDisplayFormatter={v => `${v} bits`}
                         isAutomated={getFxAutomationInfo('bitcrusher', 'bits').isAutomated}
                         onClearAutomation={getFxAutomationInfo('bitcrusher', 'bits').onClearAutomation}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'bitcrusherBits')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'bitcrusherBits')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'bitcrusherBits')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'bitcrusherBits'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'bitcrusherBits')}
                       />
                       <Knob 
                         label="Downsample"
@@ -3053,6 +3442,12 @@ export default function App() {
                         valueDisplayFormatter={v => `${v}x`}
                         isAutomated={getFxAutomationInfo('bitcrusher', 'downsample').isAutomated}
                         onClearAutomation={getFxAutomationInfo('bitcrusher', 'downsample').onClearAutomation}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'bitcrusherDownsample')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'bitcrusherDownsample')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'bitcrusherDownsample')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'bitcrusherDownsample'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'bitcrusherDownsample')}
                       />
                     </div>
                   </div>
@@ -3080,6 +3475,12 @@ export default function App() {
                         valueDisplayFormatter={v => `${Math.round(v * 100)}%`}
                         isAutomated={getFxAutomationInfo('distortion', 'drive').isAutomated}
                         onClearAutomation={getFxAutomationInfo('distortion', 'drive').onClearAutomation}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'distDrive')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'distDrive')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'distDrive')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'distDrive'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'distDrive')}
                       />
                     </div>
                   </div>
@@ -3107,6 +3508,12 @@ export default function App() {
                         valueDisplayFormatter={v => v > 1000 ? `${(v/1000).toFixed(1)}kHz` : `${Math.round(v)}Hz`}
                         isAutomated={getFxAutomationInfo('filter', 'cutoff').isAutomated}
                         onClearAutomation={getFxAutomationInfo('filter', 'cutoff').onClearAutomation}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'filterCutoff')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'filterCutoff')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'filterCutoff')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'filterCutoff'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'filterCutoff')}
                       />
                       <Knob 
                         label="Resonance"
@@ -3118,6 +3525,12 @@ export default function App() {
                         valueDisplayFormatter={v => v.toFixed(1)}
                         isAutomated={getFxAutomationInfo('filter', 'resonance').isAutomated}
                         onClearAutomation={getFxAutomationInfo('filter', 'resonance').onClearAutomation}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'filterResonance')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'filterResonance')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'filterResonance')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'filterResonance'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'filterResonance')}
                       />
                     </div>
                     
@@ -3170,6 +3583,12 @@ export default function App() {
                         valueDisplayFormatter={v => `${Math.round(v * 1000)}ms`}
                         isAutomated={getFxAutomationInfo('delay', 'time').isAutomated}
                         onClearAutomation={getFxAutomationInfo('delay', 'time').onClearAutomation}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'delayTime')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'delayTime')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'delayTime')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'delayTime'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'delayTime')}
                       />
                       <Knob 
                         label="Feedback"
@@ -3181,6 +3600,12 @@ export default function App() {
                         valueDisplayFormatter={v => `${Math.round(v * 100)}%`}
                         isAutomated={getFxAutomationInfo('delay', 'feedback').isAutomated}
                         onClearAutomation={getFxAutomationInfo('delay', 'feedback').onClearAutomation}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'delayFeedback')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'delayFeedback')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'delayFeedback')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'delayFeedback'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'delayFeedback')}
                       />
                       <Knob 
                         label="Mix"
@@ -3192,6 +3617,12 @@ export default function App() {
                         valueDisplayFormatter={v => `${Math.round(v * 100)}%`}
                         isAutomated={getFxAutomationInfo('delay', 'mix').isAutomated}
                         onClearAutomation={getFxAutomationInfo('delay', 'mix').onClearAutomation}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'delayMix')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'delayMix')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'delayMix')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'delayMix'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'delayMix')}
                       />
                     </div>
                   </div>
@@ -3219,6 +3650,12 @@ export default function App() {
                         valueDisplayFormatter={v => `${v.toFixed(1)}s`}
                         isAutomated={getFxAutomationInfo('reverb', 'decay').isAutomated}
                         onClearAutomation={getFxAutomationInfo('reverb', 'decay').onClearAutomation}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'reverbDecay')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'reverbDecay')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'reverbDecay')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'reverbDecay'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'reverbDecay')}
                       />
                       <Knob 
                         label="Mix"
@@ -3230,6 +3667,12 @@ export default function App() {
                         valueDisplayFormatter={v => `${Math.round(v * 100)}%`}
                         isAutomated={getFxAutomationInfo('reverb', 'mix').isAutomated}
                         onClearAutomation={getFxAutomationInfo('reverb', 'mix').onClearAutomation}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'reverbMix')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'reverbMix')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'reverbMix')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'reverbMix'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'reverbMix')}
                       />
                     </div>
                   </div>
@@ -3255,6 +3698,12 @@ export default function App() {
                         defaultValue={0.6}
                         onChange={(val) => handleFxParamChange('sidechain', 'ratio', val)}
                         valueDisplayFormatter={v => `${Math.round(v * 100)}%`}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'sidechainRatio')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'sidechainRatio')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'sidechainRatio')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'sidechainRatio'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'sidechainRatio')}
                       />
                       <Knob 
                         label="Attack"
@@ -3264,6 +3713,12 @@ export default function App() {
                         defaultValue={0.05}
                         onChange={(val) => handleFxParamChange('sidechain', 'attack', val)}
                         valueDisplayFormatter={v => `${Math.round(v * 1000)}ms`}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'sidechainAttack')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'sidechainAttack')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'sidechainAttack')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'sidechainAttack'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'sidechainAttack')}
                       />
                       <Knob 
                         label="Release"
@@ -3273,6 +3728,12 @@ export default function App() {
                         defaultValue={0.2}
                         onChange={(val) => handleFxParamChange('sidechain', 'release', val)}
                         valueDisplayFormatter={v => `${Math.round(v * 1000)}ms`}
+                        midiCc={midiManager.getCcMappingForParam(-1, 'sidechainRelease')}
+                        showMidiCcOverlay={showMidiCcOverlay}
+                        onContextMenu={(e) => handleKnobContextMenu(e, -1, 'sidechainRelease')}
+                        onMidiLearn={() => handleMidiLearn(-1, 'sidechainRelease')}
+                        isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'sidechainRelease'}
+                        onMidiUnbind={() => handleMidiUnbind(-1, 'sidechainRelease')}
                       />
                     </div>
                   </div>
@@ -3428,9 +3889,9 @@ export default function App() {
                       Route your master sound through 5 universal effects and 1 global Bitcrusher:
                     </p>
                     <ul style={{ margin: 0, paddingLeft: '1rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                      <li>**Bitcrusher**: Heavy quantization bits noise and downsampling aliasing. Individual tracks can bypass the Bitcrusher using their **BYP ON** / **CRUNCH** bypass toggle buttons in their card footers.</li>
+                      <li>**Bitcrusher**: Heavy quantization bits noise, downsampling aliasing, and dry/wet Mix blending. Individual tracks can bypass the Bitcrusher using their **BYP ON** / **CRUNCH** bypass toggle buttons in their card footers.</li>
                       <li>**Saturator**: Overdriven waveshaper compression.</li>
-                      <li>**Filter**: Stereo Lowpass/Highpass/Bandpass filter with resonance sweeping.</li>
+                      <li>**Filter**: Stereo Lowpass, Highpass, Bandpass, Comb, Formant, Ring Mod, Phaser, 24dB LP, Notch, and Peaking EQ filter with resonance sweeping.</li>
                       <li>**Delay**: Low-pass feedback delay lines for echos.</li>
                       <li>**Sidechain Compressor**: Automatically ducks other frequencies when the Kick triggers!</li>
                     </ul>
@@ -3526,11 +3987,14 @@ export default function App() {
         {/* Slam the Door Control Center */}
         <div style={{
           display: 'flex',
-          flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          gap: '0.15rem',
-          margin: '0 1rem'
+          gap: '0.8rem',
+          margin: '0 1rem',
+          padding: '0.2rem 0.5rem',
+          border: '1.2px solid var(--border-medium)',
+          borderRadius: '10px',
+          background: 'rgba(255, 255, 255, 0.4)'
         }}>
           <button
             onMouseDown={handleSlamMouseDown}
@@ -3541,17 +4005,14 @@ export default function App() {
             onClick={handleSlamClick}
             className={isSlamPending ? 'slam-pending' : ''}
             style={{
+              width: '42px',
+              height: '42px',
               background: isSlamPending 
                 ? 'linear-gradient(135deg, #f1c40f, #e67e22)' 
                 : (isSlamActive ? 'linear-gradient(135deg, #d35400, #e67e22)' : 'linear-gradient(135deg, #e67e22, #f39c12)'),
               border: 'none',
               borderRadius: '8px',
-              padding: '0.45rem 1.25rem',
               color: 'white',
-              fontSize: '0.85rem',
-              fontWeight: '800',
-              fontFamily: 'var(--font-mono)',
-              letterSpacing: '0.05em',
               cursor: 'pointer',
               boxShadow: isSlamActive 
                 ? 'inset 0 3px 5px rgba(0,0,0,0.2), 0 0 10px rgba(230, 126, 34, 0.4)' 
@@ -3560,44 +4021,98 @@ export default function App() {
               transition: 'all 0.1s ease',
               display: 'flex',
               alignItems: 'center',
-              gap: '0.4rem',
-              textTransform: 'uppercase'
+              justifyContent: 'center'
             }}
+            title={isSlamPending ? 'Pending beat boundary...' : 'Slam the Door (Filter/Compressor)'}
           >
-            <Radio size={14} color="white" style={{ animation: (isSlamActive || isSlamPending) ? 'pulse 0.5s infinite alternate' : 'none' }} />
-            {isSlamPending ? 'PENDING...' : 'SLAM THE DOOR'}
+            <Radio size={18} color="white" style={{ animation: (isSlamActive || isSlamPending) ? 'pulse 0.5s infinite alternate' : 'none' }} />
           </button>
           
-          <label style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.3rem',
-            fontSize: '0.65rem',
-            fontWeight: '700',
-            fontFamily: 'var(--font-mono)',
-            color: 'var(--text-secondary)',
-            cursor: 'pointer',
-            userSelect: 'none'
-          }}>
-            <input
-              type="checkbox"
-              checked={isSlamLatched}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
+            <label style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.3rem',
+              fontSize: '0.65rem',
+              fontWeight: '700',
+              fontFamily: 'var(--font-mono)',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              userSelect: 'none'
+            }}>
+              <input
+                type="checkbox"
+                checked={isSlamLatched}
+                onChange={(e) => {
+                  const latched = e.target.checked;
+                  setIsSlamLatched(latched);
+                  if (!latched && isSlamActive) {
+                    setIsSlamActive(false);
+                    audioEngine.setSlamTheDoor(false);
+                    logSession("Latched Door Slam released.", "INFO");
+                  }
+                }}
+                style={{
+                  accentColor: 'var(--accent-orange)',
+                  cursor: 'pointer'
+                }}
+              />
+              LATCH
+            </label>
+            
+            <select
+              value={doorType}
               onChange={(e) => {
-                const latched = e.target.checked;
-                setIsSlamLatched(latched);
-                if (!latched && isSlamActive) {
-                  setIsSlamActive(false);
-                  audioEngine.setSlamTheDoor(false);
-                  logSession("Latched Door Slam released.", "INFO");
-                }
+                const val = parseInt(e.target.value);
+                setDoorType(val);
+                audioEngine.setDoorType(val);
               }}
               style={{
-                accentColor: 'var(--accent-orange)',
-                cursor: 'pointer'
+                background: 'white',
+                border: '1.2px solid var(--border-medium)',
+                borderRadius: '4px',
+                padding: '0.1rem 0.2rem',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '0.6rem',
+                fontWeight: '700',
+                color: 'var(--text-primary)',
+                cursor: 'pointer',
+                outline: 'none'
               }}
+              title="Select Type of Door (changes filter response)"
+            >
+              <option value={0}>Hollow Door</option>
+              <option value={1}>Heavy Door</option>
+              <option value={2}>Aluminum Door</option>
+              <option value={3}>Steel Door</option>
+              <option value={4}>Glass Door</option>
+              <option value={5}>Submarine Hatch</option>
+              <option value={6}>Sci-Fi Airlock</option>
+              <option value={7}>Cathedral Gate</option>
+            </select>
+          </div>
+
+          <div style={{ width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Knob 
+              label="Mix"
+              value={slamMix}
+              min={0.0}
+              max={1.0}
+              defaultValue={1.0}
+              onChange={(val) => {
+                setSlamMix(val);
+                audioEngine.setSlamMix(val);
+              }}
+              valueDisplayFormatter={v => `${Math.round(v * 100)}%`}
+              tooltip="Dry/wet blend of the Slam filter and compressor"
+              midiCc={midiManager.getCcMappingForParam(-1, 'slamMix')}
+              showMidiCcOverlay={showMidiCcOverlay}
+              onContextMenu={(e) => handleKnobContextMenu(e, -1, 'slamMix')}
+              onMidiLearn={() => handleMidiLearn(-1, 'slamMix')}
+              isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'slamMix'}
+              onMidiUnbind={() => handleMidiUnbind(-1, 'slamMix')}
             />
-            LATCH SLAM
-          </label>
+          </div>
         </div>
 
         {/* Playback Controls Toolbar */}
@@ -3642,6 +4157,12 @@ export default function App() {
                 }}
                 valueDisplayFormatter={v => `${Math.round(v * 100)}%`}
                 tooltip="Applies late-16th note delay to produce an organic human swing groove."
+                midiCc={midiManager.getCcMappingForParam(-1, 'swing')}
+                showMidiCcOverlay={showMidiCcOverlay}
+                onContextMenu={(e) => handleKnobContextMenu(e, -1, 'swing')}
+                onMidiLearn={() => handleMidiLearn(-1, 'swing')}
+                isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'swing'}
+                onMidiUnbind={() => handleMidiUnbind(-1, 'swing')}
               />
             </div>
 
@@ -3716,6 +4237,12 @@ export default function App() {
                 }}
                 valueDisplayFormatter={v => `${Math.round(v * 100)}%`}
                 tooltip="Adjusts the global master output gain level of the synthesizer (0% to 150%)."
+                midiCc={midiManager.getCcMappingForParam(-1, 'masterVolume')}
+                showMidiCcOverlay={showMidiCcOverlay}
+                onContextMenu={(e) => handleKnobContextMenu(e, -1, 'masterVolume')}
+                onMidiLearn={() => handleMidiLearn(-1, 'masterVolume')}
+                isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'masterVolume'}
+                onMidiUnbind={() => handleMidiUnbind(-1, 'masterVolume')}
               />
             </div>
           </div>
@@ -3797,39 +4324,32 @@ export default function App() {
                 <option value="glitch">Glitch: 32nd Note Chaos</option>
                 <option value="stutter">Stutter: Focus Repeat</option>
                 <option value="half_tempo">Half-Tempo Breakbeat</option>
+                <option value="crescendo">Crescendo: Snare & Tom Build</option>
+                <option value="pitch_rise">Pitch Rise: Resonant Stutter</option>
+                <option value="melodic_run">Melodic Run: Step Lead</option>
+                <option value="drum_n_bass_crossover">DnB Crossover: Breakbeat</option>
+                <option value="dynamic_decay">Dynamic Decay: Filter Sweep</option>
+                <option value="chaos_sweep">Chaos Sweep: Rand FX Mod</option>
               </select>
 
-              {/* MIDI Learn Button for Fill */}
-              {(() => {
-                const midiCc = midiManager.getCcMappingForParam(-1, 'fill');
-                const isLearning = midiLearnTarget && midiLearnTarget.channelId === -1 && midiLearnTarget.paramKey === 'fill';
-                return (
-                  <button
-                    onClick={() => {
-                      if (isLearning) {
-                        midiManager.cancelLearning();
-                        setMidiLearnTarget(null);
-                      } else {
-                        handleMidiLearn(-1, 'fill');
-                      }
-                    }}
-                    style={{
-                      padding: '0.2rem 0.45rem',
-                      fontSize: '0.65rem',
-                      fontFamily: 'var(--font-mono)',
-                      fontWeight: '700',
-                      background: isLearning ? 'rgba(109, 93, 252, 0.15)' : midiCc !== null ? 'rgba(75, 155, 148, 0.15)' : 'rgba(255,255,255,0.7)',
-                      color: isLearning ? 'var(--accent-learn)' : midiCc !== null ? 'var(--accent-teal)' : 'var(--text-secondary)',
-                      border: `1.2px solid ${isLearning ? 'var(--accent-learn)' : 'var(--border-medium)'}`,
-                      borderRadius: '5px',
-                      cursor: 'pointer'
-                    }}
-                    title="Map physical MIDI CC button/pad to trigger fill momentarily"
-                  >
-                    {isLearning ? 'LEARNING CC...' : midiCc !== null ? `CC ${midiCc} ✖` : 'LEARN MIDI CC'}
-                  </button>
-                );
-              })()}
+              {/* SHOW MIDI CC Toggle Button */}
+              <button
+                onClick={() => setShowMidiCcOverlay(!showMidiCcOverlay)}
+                style={{
+                  padding: '0.2rem 0.45rem',
+                  fontSize: '0.65rem',
+                  fontFamily: 'var(--font-mono)',
+                  fontWeight: '700',
+                  background: showMidiCcOverlay ? 'rgba(230, 126, 34, 0.15)' : 'rgba(255,255,255,0.7)',
+                  color: showMidiCcOverlay ? 'var(--accent-orange)' : 'var(--text-secondary)',
+                  border: `1.2px solid ${showMidiCcOverlay ? 'var(--accent-orange)' : 'var(--border-medium)'}`,
+                  borderRadius: '5px',
+                  cursor: 'pointer'
+                }}
+                title="Toggle MIDI CC overlay badges on controls"
+              >
+                {showMidiCcOverlay ? 'HIDE MIDI CC' : 'SHOW MIDI CC'}
+              </button>
             </div>
           </div>
         </div>
@@ -4215,19 +4735,19 @@ export default function App() {
           </div>
 
           {/* MIDI and Dials Utilities */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
-            <div className="midi-status-strip">
-              <div 
-                className={`midi-led ${
-                  midiLearnTarget !== null ? 'learning' : 
-                  midiTrigger ? 'trigger' : 
-                  midiConnected ? 'connected' : ''
-                }`} 
-              />
-              <span>MIDI: {midiStatus}</span>
-            </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '1.25rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
+              <div className="midi-status-strip">
+                <div 
+                  className={`midi-led ${
+                    midiLearnTarget !== null ? 'learning' : 
+                    midiTrigger ? 'trigger' : 
+                    midiConnected ? 'connected' : ''
+                  }`} 
+                />
+                <span>MIDI: {midiStatus}</span>
+              </div>
 
-            <div style={{ display: 'flex', gap: '0.4rem' }}>
               <button 
                 className={`btn ${isEditorCollapsed ? 'btn-active' : ''}`} 
                 onClick={() => {
@@ -4253,7 +4773,9 @@ export default function App() {
                 {isCollapsed ? <Maximize2 size={12} /> : <Minimize2 size={12} />}
                 {isCollapsed ? 'EXPAND DRUMS' : 'COLLAPSE DRUMS'}
               </button>
+            </div>
 
+            <div style={{ display: 'flex', gap: '0.4rem' }}>
               <button className="btn" onClick={handleResetKnobs} title="Reset all instrument parameters">
                 <RotateCcw size={12} />
                 Reset Dials
@@ -4577,6 +5099,328 @@ export default function App() {
               })}
             </div>
           </div>
+
+          {/* Pitch Bend Note Control Graph */}
+          <div 
+            style={{
+              background: 'rgba(255, 255, 255, 0.45)',
+              border: '1.5px solid var(--border-light)',
+              borderRadius: '12px',
+              padding: '0.85rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.45rem',
+              boxShadow: 'var(--shadow-sm)',
+              width: '100%',
+              marginTop: '1rem'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: '800', fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+                  PITCH BEND NOTE CONTROL GRAPH: {INSTRUMENTS[selectedInstrument].name.toUpperCase()}
+                </span>
+              </div>
+              
+              {/* Pitch Snapping / Preset Controls */}
+              {isPitchEligible && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                  {/* Key Selector */}
+                  <select
+                    value={pitchKey}
+                    onChange={(e) => {
+                      setPitchKey(e.target.value);
+                      logSession(`Set pitch snap key to: ${e.target.value}`, "INFO");
+                    }}
+                    style={{
+                      background: 'white',
+                      border: '1.2px solid var(--border-medium)',
+                      borderRadius: '6px',
+                      padding: '0.2rem 0.4rem',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      color: 'var(--text-primary)',
+                      outline: 'none',
+                      boxShadow: 'var(--shadow-sm)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {NOTE_NAMES.map(k => (
+                      <option key={k} value={k}>{k}</option>
+                    ))}
+                  </select>
+
+                  {/* Scale Selector */}
+                  <select
+                    value={pitchScale}
+                    onChange={(e) => {
+                      setPitchScale(e.target.value);
+                      logSession(`Set pitch snap scale to: ${e.target.value}`, "INFO");
+                    }}
+                    style={{
+                      background: 'white',
+                      border: '1.2px solid var(--border-medium)',
+                      borderRadius: '6px',
+                      padding: '0.2rem 0.4rem',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      color: 'var(--text-primary)',
+                      outline: 'none',
+                      boxShadow: 'var(--shadow-sm)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {Object.keys(SCALE_INTERVALS).map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+
+                  {/* Presets Select */}
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        applyPitchPreset(e.target.value, NOTE_NAMES.indexOf(pitchKey), pitchScale);
+                        e.target.value = ""; // Reset value
+                      }
+                    }}
+                    style={{
+                      background: 'white',
+                      border: '1.2px solid var(--border-medium)',
+                      borderRadius: '6px',
+                      padding: '0.2rem 0.4rem',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      color: 'var(--accent-orange)',
+                      outline: 'none',
+                      boxShadow: 'var(--shadow-sm)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <option value="" disabled>PITCH PRESETS</option>
+                    <option value="arpeggio_up">Arpeggio Up</option>
+                    <option value="descending">Descending Scale</option>
+                    <option value="pentatonic">Pentatonic Jumps</option>
+                    <option value="octave">Octave Jumps</option>
+                    <option value="chaos">Chaos Random</option>
+                    <option value="flat">Flat Scale</option>
+                  </select>
+
+                  {/* CLEAR Pitch Button */}
+                  <button
+                    onClick={() => {
+                      applyPitchPreset('flat', 0, 'Chromatic');
+                      logSession(`Cleared pitches for track ${selectedInstrument}`, "INFO");
+                    }}
+                    style={{
+                      padding: '0.2rem 0.5rem',
+                      background: '#e74c3c',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '0.7rem',
+                      fontWeight: '700',
+                      fontFamily: 'var(--font-mono)',
+                      cursor: 'pointer',
+                      boxShadow: 'var(--shadow-sm)'
+                    }}
+                  >
+                    CLEAR
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Note Control Graph SVG */}
+            {isPitchEligible ? (
+              <div 
+                style={{ 
+                  position: 'relative', 
+                  width: '100%', 
+                  background: '#ffffff', 
+                  border: '1px solid var(--border-medium)',
+                  borderRadius: '8px',
+                  boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.05)',
+                  overflow: 'hidden'
+                }}
+              >
+                <svg
+                  ref={svgRef}
+                  width="100%"
+                  height="160"
+                  onMouseDown={(e) => {
+                    setIsSvgDragging(true);
+                    handleSvgInteraction(e);
+                  }}
+                  onMouseMove={handleSvgMouseMove}
+                  onMouseUp={() => setIsSvgDragging(false)}
+                  onMouseLeave={() => {
+                    setIsSvgDragging(false);
+                    setHoveredSvgStep(null);
+                    setHoveredSvgSemitone(null);
+                  }}
+                  style={{ display: 'block', cursor: 'crosshair', userSelect: 'none' }}
+                >
+                  {/* Grid Lines and Labels */}
+                  {(() => {
+                    const keyRootIdx = NOTE_NAMES.indexOf(pitchKey);
+                    const intervals = SCALE_INTERVALS[pitchScale] || SCALE_INTERVALS["Chromatic"];
+                    const lines = [];
+                    
+                    // Draw horizontal scale notes lines
+                    for (let semitone = -24; semitone <= 24; semitone++) {
+                      if (isSemitoneInScale(semitone, keyRootIdx, intervals)) {
+                        const val = 0.5 + semitone / 48.0;
+                        const y = 160 - (val * 160);
+                        
+                        if (semitone % 12 === 0) {
+                          // Octave lines
+                          lines.push(
+                            <g key={`oct-${semitone}`}>
+                              <line x1="120" y1={y} x2="100%" y2={y} stroke="rgba(0,0,0,0.12)" strokeWidth="1" />
+                              <text x="10" y={y + 4} fontSize="9" fontWeight="800" fill="rgba(0,0,0,0.4)" fontFamily="var(--font-mono)">
+                                {getNoteName(semitone)}
+                              </text>
+                            </g>
+                          );
+                        } else {
+                          // Normal scale lines
+                          lines.push(
+                            <line key={`sem-${semitone}`} x1="120" y1={y} x2="100%" y2={y} stroke="rgba(0,0,0,0.03)" strokeWidth="0.5" />
+                          );
+                        }
+                      }
+                    }
+                    
+                    // Draw vertical step lines
+                    const stepWidth = (svgRef.current?.getBoundingClientRect().width - 120) / stepsCount || (1280 - 120 - 32) / stepsCount;
+                    for (let s = 0; s <= stepsCount; s++) {
+                      const x = 120 + s * stepWidth;
+                      lines.push(
+                        <line key={`v-${s}`} x1={x} y1="0" x2={x} y2="160" stroke="rgba(0,0,0,0.025)" strokeWidth={s % 4 === 0 ? "1" : "0.5"} />
+                      );
+                    }
+                    
+                    return lines;
+                  })()}
+
+                  {/* Draw Connecting Line Path */}
+                  {activePitches && (() => {
+                    const rectWidth = svgRef.current?.getBoundingClientRect().width || (1280 - 32);
+                    const graphWidth = rectWidth - 120;
+                    const stepWidth = graphWidth / stepsCount;
+                    
+                    let pathData = "";
+                    for (let s = 0; s < stepsCount; s++) {
+                      const val = activePitches[s] ?? 0.5;
+                      const cx = 120 + s * stepWidth + stepWidth / 2;
+                      const cy = 160 - (val * 160);
+                      pathData += `${s === 0 ? 'M' : 'L'} ${cx} ${cy}`;
+                    }
+                    
+                    return (
+                      <path 
+                        d={pathData} 
+                        fill="none" 
+                        stroke={activeColor} 
+                        strokeWidth="2" 
+                        strokeLinecap="round" 
+                        strokeLinejoin="round" 
+                        style={{ opacity: 0.85 }} 
+                      />
+                    );
+                  })()}
+
+                  {/* Draw step active indicators and pitch dots */}
+                  {activePitches && Array.from({ length: stepsCount }).map((_, s) => {
+                    const rectWidth = svgRef.current?.getBoundingClientRect().width || (1280 - 32);
+                    const graphWidth = rectWidth - 120;
+                    const stepWidth = graphWidth / stepsCount;
+                    
+                    const val = activePitches[s] ?? 0.5;
+                    const cx = 120 + s * stepWidth + stepWidth / 2;
+                    const cy = 160 - (val * 160);
+                    const hasHit = gridData[selectedInstrument][s];
+                    
+                    return (
+                      <g key={s}>
+                        {/* Green trigger dot at top */}
+                        {hasHit && (
+                          <circle cx={cx} cy="10" r="3.5" fill="#2ecc71" />
+                        )}
+                        {/* Draggable pitch dot */}
+                        <circle 
+                          cx={cx} 
+                          cy={cy} 
+                          r="5.5" 
+                          fill={activeColor} 
+                          stroke="#ffffff" 
+                          strokeWidth="1.5"
+                          style={{ cursor: 'ns-resize', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.15))' }}
+                        />
+                      </g>
+                    );
+                  })}
+                </svg>
+
+                {/* Snapped Hover Tooltip overlay */}
+                {hoveredSvgStep !== null && hoveredSvgSemitone !== null && (() => {
+                  const rectWidth = svgRef.current?.getBoundingClientRect().width || (1280 - 32);
+                  const graphWidth = rectWidth - 120;
+                  const stepWidth = graphWidth / stepsCount;
+                  
+                  const cx = 120 + hoveredSvgStep * stepWidth + stepWidth / 2;
+                  const val = 0.5 + hoveredSvgSemitone / 48.0;
+                  const cy = 160 - (val * 160);
+                  
+                  return (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: `${cx - 25}px`,
+                        top: `${cy - 26}px`,
+                        width: '50px',
+                        background: 'var(--text-primary)',
+                        color: 'white',
+                        fontSize: '9px',
+                        fontFamily: 'var(--font-mono)',
+                        fontWeight: '800',
+                        textAlign: 'center',
+                        padding: '2px 0',
+                        borderRadius: '4px',
+                        boxShadow: 'var(--shadow-sm)',
+                        pointerEvents: 'none',
+                        zIndex: 10
+                      }}
+                    >
+                      {getNoteName(hoveredSvgSemitone)}
+                    </div>
+                  );
+                })()}
+              </div>
+            ) : (
+              <div 
+                style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center', 
+                  height: '160px', 
+                  background: 'rgba(0,0,0,0.01)', 
+                  border: '1.2px dashed var(--border-medium)', 
+                  borderRadius: '8px',
+                  color: 'var(--text-muted)',
+                  fontSize: '0.75rem',
+                  fontFamily: 'var(--font-mono)',
+                  fontWeight: '600'
+                }}
+              >
+                PITCH BEND STEP AUTOMATION ONLY AVAILABLE FOR TOMS, BEEP, BLIP, AND BLOOP.
+              </div>
+            )}
+          </div>
         </section>
       )}
 
@@ -4746,6 +5590,12 @@ export default function App() {
                   tooltip="Reduces audio sample bit depth (1 to 16 bits) to introduce heavy quantization noise."
                   isAutomated={getFxAutomationInfo('bitcrusher', 'bits').isAutomated}
                   onClearAutomation={getFxAutomationInfo('bitcrusher', 'bits').onClearAutomation}
+                  midiCc={midiManager.getCcMappingForParam(-1, 'bitcrusherBits')}
+                  showMidiCcOverlay={showMidiCcOverlay}
+                  onContextMenu={(e) => handleKnobContextMenu(e, -1, 'bitcrusherBits')}
+                  onMidiLearn={() => handleMidiLearn(-1, 'bitcrusherBits')}
+                  isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'bitcrusherBits'}
+                  onMidiUnbind={() => handleMidiUnbind(-1, 'bitcrusherBits')}
                 />
                 <Knob 
                   label="Downsample"
@@ -4758,6 +5608,30 @@ export default function App() {
                   tooltip="Reduces sample rate by dropping sample steps to introduce digital aliasing and lo-fi grit."
                   isAutomated={getFxAutomationInfo('bitcrusher', 'downsample').isAutomated}
                   onClearAutomation={getFxAutomationInfo('bitcrusher', 'downsample').onClearAutomation}
+                  midiCc={midiManager.getCcMappingForParam(-1, 'bitcrusherDownsample')}
+                  showMidiCcOverlay={showMidiCcOverlay}
+                  onContextMenu={(e) => handleKnobContextMenu(e, -1, 'bitcrusherDownsample')}
+                  onMidiLearn={() => handleMidiLearn(-1, 'bitcrusherDownsample')}
+                  isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'bitcrusherDownsample'}
+                  onMidiUnbind={() => handleMidiUnbind(-1, 'bitcrusherDownsample')}
+                />
+                <Knob 
+                  label="Mix"
+                  value={getAutomatedFxValue('bitcrusher', 'mix', bitcrusherMix)}
+                  min={0.0}
+                  max={1.0}
+                  defaultValue={1.0}
+                  onChange={handleBitcrusherMix}
+                  valueDisplayFormatter={v => `${Math.round(v * 100)}%`}
+                  tooltip="Dry/wet blend of the bitcrushed signal."
+                  isAutomated={getFxAutomationInfo('bitcrusher', 'mix').isAutomated}
+                  onClearAutomation={getFxAutomationInfo('bitcrusher', 'mix').onClearAutomation}
+                  midiCc={midiManager.getCcMappingForParam(-1, 'bitcrusherMix')}
+                  showMidiCcOverlay={showMidiCcOverlay}
+                  onContextMenu={(e) => handleKnobContextMenu(e, -1, 'bitcrusherMix')}
+                  onMidiLearn={() => handleMidiLearn(-1, 'bitcrusherMix')}
+                  isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'bitcrusherMix'}
+                  onMidiUnbind={() => handleMidiUnbind(-1, 'bitcrusherMix')}
                 />
               </div>
             </div>
@@ -4866,6 +5740,12 @@ export default function App() {
                       tooltip="Overdrives waveshaper saturation limit to warm up or mangle the master output."
                       isAutomated={getFxAutomationInfo('distortion', 'drive').isAutomated}
                       onClearAutomation={getFxAutomationInfo('distortion', 'drive').onClearAutomation}
+                      midiCc={midiManager.getCcMappingForParam(-1, 'distDrive')}
+                      showMidiCcOverlay={showMidiCcOverlay}
+                      onContextMenu={(e) => handleKnobContextMenu(e, -1, 'distDrive')}
+                      onMidiLearn={() => handleMidiLearn(-1, 'distDrive')}
+                      isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'distDrive'}
+                      onMidiUnbind={() => handleMidiUnbind(-1, 'distDrive')}
                     />
                   </div>
                 </div>
@@ -4899,16 +5779,30 @@ export default function App() {
                         value={fxParams.filter.type} 
                         onChange={(e) => handleFilterTypeChange(e.target.value)}
                         style={{
-                          background: 'transparent',
-                          border: 'none',
-                          fontSize: '0.65rem',
+                          background: 'white',
+                          border: '1.2px solid var(--border-medium)',
+                          borderRadius: '6px',
+                          padding: '0.2rem 0.4rem',
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: '0.7rem',
                           fontWeight: '700',
-                          color: fxEnabled.filter ? 'var(--accent-orange)' : 'var(--text-muted)',
-                          cursor: 'pointer'
+                          color: fxEnabled.filter ? 'var(--accent-orange)' : 'var(--text-secondary)',
+                          cursor: 'pointer',
+                          outline: 'none',
+                          boxShadow: 'var(--shadow-sm)'
                         }}
+                        title="Select Filter Engine Type"
                       >
-                        <option value="lowpass">LP</option>
-                        <option value="highpass">HP</option>
+                        <option value="lowpass">LP (12dB)</option>
+                        <option value="highpass">HP (12dB)</option>
+                        <option value="bandpass">Bandpass</option>
+                        <option value="comb">Comb Filter</option>
+                        <option value="formant">Formant (Vowel)</option>
+                        <option value="ringmod">Ring Mod</option>
+                        <option value="phaser">Phaser</option>
+                        <option value="lowpass24">LP (24dB)</option>
+                        <option value="notch">Notch Reject</option>
+                        <option value="peaking">Peaking EQ</option>
                       </select>
                     </div>
                   </div>
@@ -4924,6 +5818,12 @@ export default function App() {
                       tooltip="Threshold frequency limit above which (LP) or below which (HP) signals are filtered."
                       isAutomated={getFxAutomationInfo('filter', 'cutoff').isAutomated}
                       onClearAutomation={getFxAutomationInfo('filter', 'cutoff').onClearAutomation}
+                      midiCc={midiManager.getCcMappingForParam(-1, 'filterCutoff')}
+                      showMidiCcOverlay={showMidiCcOverlay}
+                      onContextMenu={(e) => handleKnobContextMenu(e, -1, 'filterCutoff')}
+                      onMidiLearn={() => handleMidiLearn(-1, 'filterCutoff')}
+                      isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'filterCutoff'}
+                      onMidiUnbind={() => handleMidiUnbind(-1, 'filterCutoff')}
                     />
                     <Knob 
                       label="Res"
@@ -4936,6 +5836,12 @@ export default function App() {
                       tooltip="Boosts and amplifies signal frequencies around the cutoff boundary to add sweeping character."
                       isAutomated={getFxAutomationInfo('filter', 'resonance').isAutomated}
                       onClearAutomation={getFxAutomationInfo('filter', 'resonance').onClearAutomation}
+                      midiCc={midiManager.getCcMappingForParam(-1, 'filterResonance')}
+                      showMidiCcOverlay={showMidiCcOverlay}
+                      onContextMenu={(e) => handleKnobContextMenu(e, -1, 'filterResonance')}
+                      onMidiLearn={() => handleMidiLearn(-1, 'filterResonance')}
+                      isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'filterResonance'}
+                      onMidiUnbind={() => handleMidiUnbind(-1, 'filterResonance')}
                     />
                   </div>
                 </div>
@@ -4982,6 +5888,12 @@ export default function App() {
                       tooltip="Sets time interval delay in milliseconds between echo reflections."
                       isAutomated={getFxAutomationInfo('delay', 'time').isAutomated}
                       onClearAutomation={getFxAutomationInfo('delay', 'time').onClearAutomation}
+                      midiCc={midiManager.getCcMappingForParam(-1, 'delayTime')}
+                      showMidiCcOverlay={showMidiCcOverlay}
+                      onContextMenu={(e) => handleKnobContextMenu(e, -1, 'delayTime')}
+                      onMidiLearn={() => handleMidiLearn(-1, 'delayTime')}
+                      isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'delayTime'}
+                      onMidiUnbind={() => handleMidiUnbind(-1, 'delayTime')}
                     />
                     <Knob 
                       label="Feedback"
@@ -4994,6 +5906,12 @@ export default function App() {
                       tooltip="Controls the percentage of signal fed back into the delay line to multiply echoes."
                       isAutomated={getFxAutomationInfo('delay', 'feedback').isAutomated}
                       onClearAutomation={getFxAutomationInfo('delay', 'feedback').onClearAutomation}
+                      midiCc={midiManager.getCcMappingForParam(-1, 'delayFeedback')}
+                      showMidiCcOverlay={showMidiCcOverlay}
+                      onContextMenu={(e) => handleKnobContextMenu(e, -1, 'delayFeedback')}
+                      onMidiLearn={() => handleMidiLearn(-1, 'delayFeedback')}
+                      isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'delayFeedback'}
+                      onMidiUnbind={() => handleMidiUnbind(-1, 'delayFeedback')}
                     />
                     <Knob 
                       label="Mix"
@@ -5006,6 +5924,12 @@ export default function App() {
                       tooltip="Balances dry clean signal and wet delay feedback echos in the chain."
                       isAutomated={getFxAutomationInfo('delay', 'mix').isAutomated}
                       onClearAutomation={getFxAutomationInfo('delay', 'mix').onClearAutomation}
+                      midiCc={midiManager.getCcMappingForParam(-1, 'delayMix')}
+                      showMidiCcOverlay={showMidiCcOverlay}
+                      onContextMenu={(e) => handleKnobContextMenu(e, -1, 'delayMix')}
+                      onMidiLearn={() => handleMidiLearn(-1, 'delayMix')}
+                      isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'delayMix'}
+                      onMidiUnbind={() => handleMidiUnbind(-1, 'delayMix')}
                     />
                   </div>
                 </div>
@@ -5052,6 +5976,12 @@ export default function App() {
                       tooltip="Sets acoustic room decay size by regenerating a longer noise impulse buffer."
                       isAutomated={getFxAutomationInfo('reverb', 'decay').isAutomated}
                       onClearAutomation={getFxAutomationInfo('reverb', 'decay').onClearAutomation}
+                      midiCc={midiManager.getCcMappingForParam(-1, 'reverbDecay')}
+                      showMidiCcOverlay={showMidiCcOverlay}
+                      onContextMenu={(e) => handleKnobContextMenu(e, -1, 'reverbDecay')}
+                      onMidiLearn={() => handleMidiLearn(-1, 'reverbDecay')}
+                      isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'reverbDecay'}
+                      onMidiUnbind={() => handleMidiUnbind(-1, 'reverbDecay')}
                     />
                     <Knob 
                       label="Mix"
@@ -5064,6 +5994,12 @@ export default function App() {
                       tooltip="Dry/Wet mix ratio of room reverb reverberation."
                       isAutomated={getFxAutomationInfo('reverb', 'mix').isAutomated}
                       onClearAutomation={getFxAutomationInfo('reverb', 'mix').onClearAutomation}
+                      midiCc={midiManager.getCcMappingForParam(-1, 'reverbMix')}
+                      showMidiCcOverlay={showMidiCcOverlay}
+                      onContextMenu={(e) => handleKnobContextMenu(e, -1, 'reverbMix')}
+                      onMidiLearn={() => handleMidiLearn(-1, 'reverbMix')}
+                      isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'reverbMix'}
+                      onMidiUnbind={() => handleMidiUnbind(-1, 'reverbMix')}
                     />
                   </div>
                 </div>
@@ -5108,6 +6044,12 @@ export default function App() {
                       onChange={(val) => handleFxParamChange('sidechain', 'ratio', val)}
                       valueDisplayFormatter={v => `${Math.round(v * 100)}%`}
                       tooltip="Sets how deep the volume ducks whenever the Kick drum triggers (0% to 100%)."
+                      midiCc={midiManager.getCcMappingForParam(-1, 'sidechainRatio')}
+                      showMidiCcOverlay={showMidiCcOverlay}
+                      onContextMenu={(e) => handleKnobContextMenu(e, -1, 'sidechainRatio')}
+                      onMidiLearn={() => handleMidiLearn(-1, 'sidechainRatio')}
+                      isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'sidechainRatio'}
+                      onMidiUnbind={() => handleMidiUnbind(-1, 'sidechainRatio')}
                     />
                     <Knob 
                       label="Attack"
@@ -5118,6 +6060,12 @@ export default function App() {
                       onChange={(val) => handleFxParamChange('sidechain', 'attack', val)}
                       valueDisplayFormatter={v => `${Math.round(v * 1000)}ms`}
                       tooltip="Ducking speed. Time taken for volume to duck down (2ms to 100ms)."
+                      midiCc={midiManager.getCcMappingForParam(-1, 'sidechainAttack')}
+                      showMidiCcOverlay={showMidiCcOverlay}
+                      onContextMenu={(e) => handleKnobContextMenu(e, -1, 'sidechainAttack')}
+                      onMidiLearn={() => handleMidiLearn(-1, 'sidechainAttack')}
+                      isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'sidechainAttack'}
+                      onMidiUnbind={() => handleMidiUnbind(-1, 'sidechainAttack')}
                     />
                     <Knob 
                       label="Release"
@@ -5128,6 +6076,12 @@ export default function App() {
                       onChange={(val) => handleFxParamChange('sidechain', 'release', val)}
                       valueDisplayFormatter={v => `${Math.round(v * 1000)}ms`}
                       tooltip="Recovery speed. Time taken to recover back to full volume (20ms to 1000ms)."
+                      midiCc={midiManager.getCcMappingForParam(-1, 'sidechainRelease')}
+                      showMidiCcOverlay={showMidiCcOverlay}
+                      onContextMenu={(e) => handleKnobContextMenu(e, -1, 'sidechainRelease')}
+                      onMidiLearn={() => handleMidiLearn(-1, 'sidechainRelease')}
+                      isLearning={midiLearnTarget?.channelId === -1 && midiLearnTarget?.paramKey === 'sidechainRelease'}
+                      onMidiUnbind={() => handleMidiUnbind(-1, 'sidechainRelease')}
                     />
                   </div>
                 </div>
@@ -5484,6 +6438,8 @@ export default function App() {
                           tooltip={overriddenK.tooltip}
                           isAutomated={getInstrumentAutomationInfo(idx, k.key).isAutomated}
                           onClearAutomation={getInstrumentAutomationInfo(idx, k.key).onClearAutomation}
+                          showMidiCcOverlay={showMidiCcOverlay}
+                          onContextMenu={(e) => handleKnobContextMenu(e, idx, k.key)}
                         />
                       );
                     })}
@@ -5920,20 +6876,24 @@ export default function App() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
                     <h3 style={{ fontSize: '0.95rem', fontWeight: '800', borderLeft: '3px solid var(--accent-orange)', paddingLeft: '0.45rem', margin: 0, fontFamily: 'var(--font-mono)' }}>1. HARDWARE MIDI CONTROLLER MAPPING</h3>
                     <p style={{ margin: 0 }}>
-                      Hover over any instrument card dial to reveal a small circular **"L"** (Learn) button:
+                      Right-click on any control dial or knob to open the MIDI context menu:
                     </p>
                     <ol style={{ margin: 0, paddingLeft: '1.2rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                      <li>Click the **"L"** button to enter MIDI CC Learn mode (knob glows orange).</li>
+                      <li>Select **"Learn MIDI CC"** from the context menu (the dial will enter learning mode).</li>
                       <li>Move any physical dial, slider, or controller knob on your external MIDI keyboard.</li>
-                      <li>The on-screen knob instantly binds to that control and displays the active mapped CC number underneath!</li>
+                      <li>The on-screen knob will instantly bind to that control and map its movements!</li>
                     </ol>
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', marginTop: '0.5rem' }}>
-                    <h3 style={{ fontSize: '0.95rem', fontWeight: '800', borderLeft: '3px solid var(--accent-teal)', paddingLeft: '0.45rem', margin: 0, fontFamily: 'var(--font-mono)' }}>2. CLEARING MIDI BINDINGS</h3>
+                    <h3 style={{ fontSize: '0.95rem', fontWeight: '800', borderLeft: '3px solid var(--accent-teal)', paddingLeft: '0.45rem', margin: 0, fontFamily: 'var(--font-mono)' }}>2. CLEARING MIDI BINDINGS & CC OVERLAY</h3>
                     <p style={{ margin: 0 }}>
-                      To unbind a dial, hover your mouse over the mapped knob and **click the mapped "CC XX ⨉" badge** in its footer. The mapping will instantly clear, letting you reassign the dial or control it manually with the mouse.
+                      To clear a binding or toggle overlays:
                     </p>
+                    <ul style={{ margin: 0, paddingLeft: '1.2rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                      <li>Right-click the mapped knob and select **"Clear Binding"** to remove the mapping.</li>
+                      <li>Click the **"SHOW MIDI CC"** button in the header toolbar to display a semi-transparent orange overlay showing all active CC mapping numbers directly on top of controls.</li>
+                    </ul>
                   </div>
                 </>
               )}
@@ -5981,11 +6941,11 @@ export default function App() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
                     <h3 style={{ fontSize: '0.95rem', fontWeight: '800', borderLeft: '3px solid var(--accent-orange)', paddingLeft: '0.45rem', margin: 0, fontFamily: 'var(--font-mono)' }}>1. "SLAM THE DOOR" ACOUSTIC DSP EFFECT</h3>
                     <p style={{ margin: 0 }}>
-                      Press and hold the orange **SLAM THE DOOR** button in the header (or check the **LATCH SLAM** box underneath to keep it engaged). During active sequencer playback, engagement delays until the next **1st or 4th beat** of the measure for a seamless transition. A gentle **150ms** crossfade attack is used to route the master mix through a wood-shielded room acoustic filter chain:
+                      Press and hold the orange **SLAM THE DOOR** button in the header (or check the **LATCH SLAM** box underneath to keep it engaged). During active sequencer playback, engagement delays until the next **1st or 4th beat** of the measure for a seamless transition. A gentle **150ms** crossfade attack is used to route the master mix through an acoustic filter chain (with a dedicated **SLAM MIX** knob to blend between clean and processed signals):
                     </p>
                     <ul style={{ margin: 0, paddingLeft: '1.2rem', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                      <li>**Vintage speaker lowpass filter**: Muffles high-end above **320Hz**, imitating a sound source behind a thick oak barrier.</li>
-                      <li>**Squashed dynamics compressor**: Applies a heavy **16:1 ratio** limit at a **-42dB threshold**, producing a high-pressure pumping effect.</li>
+                      <li>**Vintage speaker lowpass filter**: Muffles high-end above **450Hz** to let more mid frequencies pass through.</li>
+                      <li>**Squashed dynamics compressor**: Applies a heavy **8:1 ratio** limit at a **-32dB threshold**, producing a high-pressure pumping effect.</li>
                       <li>**Sub-bass booming sweep**: Automatically injects a powerful 55Hz down-swept booming sub-bass note with a 3.0s decay on the 1st or 4th beat of each measure.</li>
                     </ul>
                   </div>
@@ -6036,6 +6996,82 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {contextMenu && (
+        <>
+          <div 
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              width: '100vw',
+              height: '100vh',
+              zIndex: 9999,
+              background: 'transparent'
+            }}
+            onClick={() => setContextMenu(null)}
+          />
+          <div 
+            style={{
+              position: 'fixed',
+              top: contextMenu.y,
+              left: contextMenu.x,
+              zIndex: 10000,
+              background: 'white',
+              border: '1.2px solid var(--border-medium)',
+              borderRadius: '8px',
+              boxShadow: 'var(--shadow-lg)',
+              padding: '0.25rem',
+              display: 'flex',
+              flexDirection: 'column',
+              minWidth: '130px'
+            }}
+          >
+            <button 
+              onClick={() => {
+                handleMidiLearn(contextMenu.channelId, contextMenu.paramKey);
+                setContextMenu(null);
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                textAlign: 'left',
+                padding: '0.4rem 0.6rem',
+                fontSize: '0.75rem',
+                fontWeight: '600',
+                cursor: 'pointer',
+                borderRadius: '4px',
+                color: 'var(--text-primary)'
+              }}
+              onMouseEnter={(e) => e.target.style.background = 'rgba(230, 126, 34, 0.1)'}
+              onMouseLeave={(e) => e.target.style.background = 'none'}
+            >
+              Learn MIDI CC
+            </button>
+            <button 
+              onClick={() => {
+                handleMidiUnbind(contextMenu.channelId, contextMenu.paramKey);
+                setContextMenu(null);
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                textAlign: 'left',
+                padding: '0.4rem 0.6rem',
+                fontSize: '0.75rem',
+                fontWeight: '600',
+                cursor: 'pointer',
+                borderRadius: '4px',
+                color: 'var(--accent-red)'
+              }}
+              onMouseEnter={(e) => e.target.style.background = 'rgba(231, 76, 60, 0.1)'}
+              onMouseLeave={(e) => e.target.style.background = 'none'}
+            >
+              Clear Binding
+            </button>
+          </div>
+        </>
       )}
     </div>
   );
