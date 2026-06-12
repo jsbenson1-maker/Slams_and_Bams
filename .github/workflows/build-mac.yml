@@ -1,0 +1,49 @@
+name: Build macOS Native Standalone and VST3
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  build:
+    name: Build macOS Universal Native App
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Clone JUCE Framework
+      run: |
+        git clone --branch 8.0.2 --depth 1 https://github.com/juce-framework/JUCE.git $GITHUB_WORKSPACE/JUCE
+
+    - name: Configure CMake
+      run: |
+        cmake -B build -S src-plugin \
+          -DJUCE_PATH=$GITHUB_WORKSPACE/JUCE \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+    - name: Build Project
+      run: |
+        cmake --build build --config Release --parallel 4
+
+    - name: Create Distribution Zip
+      run: |
+        mkdir -p dist
+        # Copy standalone app bundle
+        cp -R build/PhyzixSnB_artefacts/Release/Standalone/PhyzixSnB.app dist/
+        # Copy VST3 plugin bundle
+        cp -R build/PhyzixSnB_artefacts/Release/VST3/PhyzixSnB.vst3 dist/
+        
+        # Package into a zip
+        cd dist
+        zip -r ../PhyzixSnB-macOS-Native.zip PhyzixSnB.app PhyzixSnB.vst3
+
+    - name: Upload Build Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: PhyzixSnB-macOS-Native
+        path: PhyzixSnB-macOS-Native.zip

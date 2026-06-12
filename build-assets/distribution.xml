@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Phyzix: Slams and Bams (v1.4.0) Studio Suite</title>
+    
+    <!-- Installer sequence configuration -->
+    <options customize="always" require-scripts="false" hostArchitectures="x86_64,arm64"/>
+    
+    <!-- Welcome, License, and Choice pages -->
+    <choices-outline>
+        <line choice="choice_standalone"/>
+        <line choice="choice_vst3"/>
+        <line choice="choice_au"/>
+        <line choice="choice_aax"/>
+    </choices-outline>
+    
+    <!-- 1. Standalone Choice -->
+    <choice id="choice_standalone" 
+            title="Standalone Desktop Application (Required)" 
+            description="Installs the standalone PhyzixSnB drum machine application into the Applications folder."
+            start_selected="true"
+            start_enabled="false"> <!-- Standalone is required and cannot be unchecked -->
+        <pkg-ref id="com.phyzix.slamsnbams.app"/>
+    </choice>
+    
+    <!-- 2. VST3 Choice -->
+    <choice id="choice_vst3" 
+            title="VST3 DAW Plug-In" 
+            description="Installs the 64-bit VST3 plug-in wrapper for use inside DAWs (Ableton Live, FL Studio, Reaper, etc.)."
+            start_selected="true">
+        <pkg-ref id="com.phyzix.slamsnbams.vst3"/>
+    </choice>
+    
+    <!-- 3. AU Choice -->
+    <choice id="choice_au" 
+            title="AudioUnit (AU) DAW Plug-In" 
+            description="Installs the Apple AudioUnit plug-in wrapper for use inside macOS DAWs (Logic Pro, GarageBand, Ableton Live)."
+            start_selected="true">
+        <pkg-ref id="com.phyzix.slamsnbams.au"/>
+    </choice>
+    
+    <!-- 4. AAX Choice -->
+    <choice id="choice_aax" 
+            title="AAX Pro Tools Plug-In" 
+            description="Installs the AAX plug-in format for compatibility inside Avid Pro Tools."
+            start_selected="false">
+        <pkg-ref id="com.phyzix.slamsnbams.aax"/>
+    </choice>
+
+    <!-- Map choices to individual package component payloads -->
+    <pkg-ref id="com.phyzix.slamsnbams.app" auth="Root">StandaloneComponent.pkg</pkg-ref>
+    <pkg-ref id="com.phyzix.slamsnbams.vst3" auth="Root">Vst3Component.pkg</pkg-ref>
+    <pkg-ref id="com.phyzix.slamsnbams.au" auth="Root">AuComponent.pkg</pkg-ref>
+    <pkg-ref id="com.phyzix.slamsnbams.aax" auth="Root">AaxComponent.pkg</pkg-ref>
+</installer-gui-script>

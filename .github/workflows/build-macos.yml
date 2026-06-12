@@ -1,0 +1,64 @@
+name: Compile macOS DMG Installer
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    name: Build Native macOS DMG Installers
+    runs-on: macos-latest
+
+    steps:
+    - name: 🔍 Checkout Code Repository
+      uses: actions/checkout@v4
+
+    - name: 🟢 Setup Node.js Environment
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+
+    - name: 📦 Install Node Modules
+      run: npm ci
+
+    - name: ⚙️ Compile Vite Production Assets & Cross-Compile macOS Apps
+      run: npm run package:mac
+
+    - name: 🛠️ Build Polished Native macOS DMG Disk Images
+      run: |
+        mkdir -p builds/installers
+        
+        echo "---------------------------------------------------------"
+        echo "🍎 Creating Apple Silicon DMG Installer..."
+        echo "---------------------------------------------------------"
+        npx electron-installer-dmg builds/Phyzix-darwin-arm64/Phyzix.app Phyzix --out=builds/installers --overwrite
+        mv builds/installers/Phyzix.dmg builds/installers/Phyzix-macOS-AppleSilicon-arm64.dmg
+        
+        echo "---------------------------------------------------------"
+        echo "💻 Creating Intel-based Mac DMG Installer..."
+        echo "---------------------------------------------------------"
+        npx electron-installer-dmg builds/Phyzix-darwin-x64/Phyzix.app Phyzix --out=builds/installers --overwrite
+        mv builds/installers/Phyzix.dmg builds/installers/Phyzix-macOS-Intel-x64.dmg
+        
+        echo "---------------------------------------------------------"
+        echo "✅ DMG Packaging Complete!"
+        ls -lh builds/installers
+        echo "---------------------------------------------------------"
+
+    - name: 📤 Upload Intel (x64) DMG Installer Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Phyzix-macOS-Intel-x64-DMG
+        path: builds/installers/Phyzix-macOS-Intel-x64.dmg
+        retention-days: 14
+
+    - name: 📤 Upload Apple Silicon (arm64) DMG Installer Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Phyzix-macOS-AppleSilicon-arm64-DMG
+        path: builds/installers/Phyzix-macOS-AppleSilicon-arm64.dmg
+        retention-days: 14
