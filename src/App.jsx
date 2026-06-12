@@ -5303,6 +5303,36 @@ export default function App() {
                         <line key={`v-${s}`} x1={x} y1="0" x2={x} y2="160" stroke="rgba(0,0,0,0.025)" strokeWidth={s % 4 === 0 ? "1" : "0.5"} />
                       );
                     }
+
+                    // Draw vertical trigger guide columns and lines themed in track color for the selected instrument
+                    for (let s = 0; s < stepsCount; s++) {
+                      const hasHit = gridData[selectedInstrument]?.[s];
+                      if (hasHit) {
+                        const cx = 120 + s * stepWidth + stepWidth / 2;
+                        lines.push(
+                          <g key={`v-trigger-${s}`}>
+                            <rect 
+                              x={120 + s * stepWidth} 
+                              y="0" 
+                              width={stepWidth} 
+                              height="160" 
+                              fill={activeColor} 
+                              style={{ opacity: 0.05 }} 
+                            />
+                            <line 
+                              x1={cx} 
+                              y1="0" 
+                              x2={cx} 
+                              y2="160" 
+                              stroke={activeColor} 
+                              strokeWidth="1.5" 
+                              strokeDasharray="2,3" 
+                              style={{ opacity: 0.35 }} 
+                            />
+                          </g>
+                        );
+                      }
+                    }
                     
                     return lines;
                   })()}
@@ -5779,17 +5809,18 @@ export default function App() {
                         value={fxParams.filter.type} 
                         onChange={(e) => handleFilterTypeChange(e.target.value)}
                         style={{
-                          background: 'white',
-                          border: '1.2px solid var(--border-medium)',
+                          background: 'rgba(255,255,255,0.75)',
+                          border: '1px solid var(--border-medium)',
                           borderRadius: '6px',
-                          padding: '0.2rem 0.4rem',
+                          padding: '0.15rem 0.4rem',
                           fontFamily: 'var(--font-mono)',
-                          fontSize: '0.7rem',
+                          fontSize: '0.65rem',
                           fontWeight: '700',
                           color: fxEnabled.filter ? 'var(--accent-orange)' : 'var(--text-secondary)',
                           cursor: 'pointer',
                           outline: 'none',
-                          boxShadow: 'var(--shadow-sm)'
+                          boxShadow: 'var(--shadow-sm)',
+                          transition: 'all 0.15s ease'
                         }}
                         title="Select Filter Engine Type"
                       >

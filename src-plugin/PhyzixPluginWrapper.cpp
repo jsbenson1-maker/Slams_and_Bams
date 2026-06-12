@@ -96,7 +96,11 @@ private:
 
 class BiquadFilter {
 public:
-    enum Type { Lowpass, Highpass, Bandpass };
+    enum Type { Lowpass, Highpass, Bandpass, Notch, Peaking, Allpass };
+
+    void reset() {
+        x1 = x2 = y1 = y2 = 0.0f;
+    }
 
     void setParams(Type newType, float cutoffHz, float QVal, double sampleRate) {
         if (sampleRate <= 0) return;
@@ -122,10 +126,32 @@ public:
             a0 = 1.0f + alpha;
             a1 = -2.0f * cosw0;
             a2 = 1.0f - alpha;
-        } else { // Bandpass
+        } else if (newType == Bandpass) {
             b0 = alpha;
             b1 = 0.0f;
             b2 = -alpha;
+            a0 = 1.0f + alpha;
+            a1 = -2.0f * cosw0;
+            a2 = 1.0f - alpha;
+        } else if (newType == Notch) {
+            b0 = 1.0f;
+            b1 = -2.0f * cosw0;
+            b2 = 1.0f;
+            a0 = 1.0f + alpha;
+            a1 = -2.0f * cosw0;
+            a2 = 1.0f - alpha;
+        } else if (newType == Peaking) {
+            // Flat EQ since gain is not separately parameterized (A=1)
+            b0 = 1.0f + alpha;
+            b1 = -2.0f * cosw0;
+            b2 = 1.0f - alpha;
+            a0 = 1.0f + alpha;
+            a1 = -2.0f * cosw0;
+            a2 = 1.0f - alpha;
+        } else if (newType == Allpass) {
+            b0 = 1.0f - alpha;
+            b1 = -2.0f * cosw0;
+            b2 = 1.0f + alpha;
             a0 = 1.0f + alpha;
             a1 = -2.0f * cosw0;
             a2 = 1.0f - alpha;
@@ -144,6 +170,244 @@ public:
 private:
     float b0 = 1, b1 = 0, b2 = 0, a0 = 1, a1 = 0, a2 = 0;
     float x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+};
+
+class CombFilter {
+public:
+    void prepare(double sampleRate) {
+        this->sampleRate = sampleRate;
+        delayBuffer.assign(192000, 0.0f);
+        writePtr = 0;
+    }
+
+    void setParams(float cutoffHz, float QVal) {
+        float safeCutoff = std::max(50.0f, std::min(20000.0f, cutoffHz));
+        float safeResonance = std::max(0.1f, std::min(25.0f, QVal));
+
+        delayTime = std::max(0.0005f, std::min(0.02f, 1.0f / safeCutoff));
+        feedbackGain = std::min(0.95f, (safeResonance / 25.0f) * 0.9f);
+    }
+
+    float process(float in) {
+        if (sampleRate <= 0.0) return in;
+
+        float delaySamples = delayTime * (float)sampleRate;
+        float readPtr = (float)writePtr - delaySamples;
+        if (readPtr < 0.0f) readPtr += (float)delayBuffer.size();
+
+        int idx1 = (int)std::floor(readPtr);
+        int idx2 = (idx1 + 1) % (int)delayBuffer.size();
+        float frac = readPtr - (float)idx1;
+
+        float y = (1.0f - frac) * delayBuffer[idx1] + frac * delayBuffer[idx2];
+
+        float writeVal = in + feedbackGain * y;
+        delayBuffer[writePtr] = writeVal;
+
+        writePtr = (writePtr + 1) % (int)delayBuffer.size();
+
+        return in + y; // Dry + Wet comb summation matching Web Audio
+    }
+
+private:
+    double sampleRate = 44100.0;
+    std::vector<float> delayBuffer;
+    int writePtr = 0;
+    float delayTime = 0.001f;
+    float feedbackGain = 0.0f;
+};
+
+class FormantFilter {
+public:
+    void prepare(double sampleRate) {
+        this->sampleRate = sampleRate;
+        bp[0].reset();
+        bp[1].reset();
+        bp[2].reset();
+    }
+
+    void setParams(float cutoffHz, float QVal) {
+        float safeCutoff = std::max(50.0f, std::min(20000.0f, cutoffHz));
+        float safeResonance = std::max(0.1f, std::min(25.0f, QVal));
+
+        float fRatio = safeCutoff / 1000.0f;
+        float f1 = 730.0f * fRatio;
+        float f2 = 1090.0f * fRatio;
+        float f3 = 2440.0f * fRatio;
+
+        float q1 = 12.0f * (safeResonance / 2.0f);
+        float q2 = 10.0f * (safeResonance / 2.0f);
+        float q3 = 8.0f * (safeResonance / 2.0f);
+
+        bp[0].setParams(BiquadFilter::Bandpass, f1, q1, sampleRate);
+        bp[1].setParams(BiquadFilter::Bandpass, f2, q2, sampleRate);
+        bp[2].setParams(BiquadFilter::Bandpass, f3, q3, sampleRate);
+    }
+
+    float process(float in) {
+        float out0 = bp[0].process(in);
+        float out1 = bp[1].process(in);
+        float out2 = bp[2].process(in);
+        return out0 + out1 + out2; // Parallel BP summed outputs
+    }
+
+private:
+    double sampleRate = 44100.0;
+    BiquadFilter bp[3];
+};
+
+class RingModulator {
+public:
+    void prepare(double sampleRate) {
+        this->sampleRate = sampleRate;
+        phase = 0.0f;
+    }
+
+    void setParams(float cutoffHz) {
+        frequency = std::max(50.0f, std::min(20000.0f, cutoffHz));
+    }
+
+    float process(float in) {
+        if (sampleRate <= 0.0) return in;
+
+        float carrier = std::sin(phase);
+        phase += 2.0f * (float)M_PI * frequency / (float)sampleRate;
+        if (phase >= 2.0f * (float)M_PI) {
+            phase -= 2.0f * (float)M_PI;
+        }
+
+        return in + in * carrier; // Dry + Amplitude modulated wet
+    }
+
+private:
+    double sampleRate = 44100.0;
+    float phase = 0.0f;
+    float frequency = 440.0f;
+};
+
+class PhaserFilter {
+public:
+    void prepare(double sampleRate) {
+        this->sampleRate = sampleRate;
+        for (int i = 0; i < 4; ++i) {
+            ap[i].reset();
+        }
+    }
+
+    void setParams(float cutoffHz, float QVal) {
+        float safeCutoff = std::max(50.0f, std::min(20000.0f, cutoffHz));
+        float safeResonance = std::max(0.1f, std::min(25.0f, QVal));
+
+        for (int i = 0; i < 4; ++i) {
+            ap[i].setParams(BiquadFilter::Allpass, safeCutoff, safeResonance, sampleRate);
+        }
+    }
+
+    float process(float in) {
+        float out = in;
+        for (int i = 0; i < 4; ++i) {
+            out = ap[i].process(out);
+        }
+        return in + out; // Dry + 4 Allpass cascade wet
+    }
+
+private:
+    double sampleRate = 44100.0;
+    BiquadFilter ap[4];
+};
+
+class Lowpass24Filter {
+public:
+    void prepare(double sampleRate) {
+        this->sampleRate = sampleRate;
+        lp1.reset();
+        lp2.reset();
+    }
+
+    void setParams(float cutoffHz, float QVal) {
+        float safeCutoff = std::max(50.0f, std::min(20000.0f, cutoffHz));
+        float safeResonance = std::max(0.1f, std::min(25.0f, QVal));
+        float stageQ = std::sqrt(safeResonance);
+
+        lp1.setParams(BiquadFilter::Lowpass, safeCutoff, stageQ, sampleRate);
+        lp2.setParams(BiquadFilter::Lowpass, safeCutoff, stageQ, sampleRate);
+    }
+
+    float process(float in) {
+        return lp2.process(lp1.process(in)); // Series LP cascade (24dB/octave)
+    }
+
+private:
+    double sampleRate = 44100.0;
+    BiquadFilter lp1, lp2;
+};
+
+class MultiFilter {
+public:
+    void prepare(double sampleRate) {
+        this->sampleRate = sampleRate;
+        biquad.reset();
+        comb.prepare(sampleRate);
+        formant.prepare(sampleRate);
+        ringMod.prepare(sampleRate);
+        phaser.prepare(sampleRate);
+        lp24.prepare(sampleRate);
+    }
+
+    void setParams(const juce::String& type, float cutoffHz, float QVal) {
+        currentType = type;
+        if (type == "lowpass") {
+            biquad.setParams(BiquadFilter::Lowpass, cutoffHz, QVal, sampleRate);
+        } else if (type == "highpass") {
+            biquad.setParams(BiquadFilter::Highpass, cutoffHz, QVal, sampleRate);
+        } else if (type == "bandpass") {
+            biquad.setParams(BiquadFilter::Bandpass, cutoffHz, QVal, sampleRate);
+        } else if (type == "notch") {
+            biquad.setParams(BiquadFilter::Notch, cutoffHz, QVal, sampleRate);
+        } else if (type == "peaking") {
+            biquad.setParams(BiquadFilter::Peaking, cutoffHz, QVal, sampleRate);
+        } else if (type == "comb") {
+            comb.setParams(cutoffHz, QVal);
+        } else if (type == "formant") {
+            formant.setParams(cutoffHz, QVal);
+        } else if (type == "ringmod") {
+            ringMod.setParams(cutoffHz);
+        } else if (type == "phaser") {
+            phaser.setParams(cutoffHz, QVal);
+        } else if (type == "lowpass24") {
+            lp24.setParams(cutoffHz, QVal);
+        } else {
+            biquad.setParams(BiquadFilter::Lowpass, cutoffHz, QVal, sampleRate);
+        }
+    }
+
+    float process(float in) {
+        if (currentType == "lowpass" || currentType == "highpass" || currentType == "bandpass" || currentType == "notch" || currentType == "peaking") {
+            return biquad.process(in);
+        } else if (currentType == "comb") {
+            return comb.process(in);
+        } else if (currentType == "formant") {
+            return formant.process(in);
+        } else if (currentType == "ringmod") {
+            return ringMod.process(in);
+        } else if (currentType == "phaser") {
+            return phaser.process(in);
+        } else if (currentType == "lowpass24") {
+            return lp24.process(in);
+        }
+        return biquad.process(in);
+    }
+
+private:
+    double sampleRate = 44100.0;
+    juce::String currentType = "lowpass";
+
+    BiquadFilter biquad;
+    CombFilter comb;
+    FormantFilter formant;
+    RingModulator ringMod;
+    PhaserFilter phaser;
+    Lowpass24Filter lp24;
 };
 
 class ReverbNode {
@@ -890,7 +1154,7 @@ public:
             setHits(7, {2, 6, 10, 14, 15});
             pitchAutomationGrid[6][0] = 0.0167f; pitchAutomationGrid[6][4] = 0.0513f; pitchAutomationGrid[6][8] = 0.078f; pitchAutomationGrid[6][12] = 0.108f;
             pitchAutomationGrid[7][2] = 0.0857f; pitchAutomationGrid[7][6] = 0.1155f; pitchAutomationGrid[7][10] = 0.1383f; pitchAutomationGrid[7][14] = 0.1640f; pitchAutomationGrid[7][15] = 0.20f;
-        } else { // Ethnic Drill (142 BPM)
+        } else if (index == 13) { // Ethnic Drill (142 BPM)
             bpm = 142;
             timeSignature = "4/4";
             stepsCount = 64;
@@ -903,6 +1167,88 @@ public:
             setHits(9, {0, 2, 4, 8, 10, 12});
             pitchAutomationGrid[9][0] = 0.2f; pitchAutomationGrid[9][2] = 0.3f; pitchAutomationGrid[9][4] = 0.25f; pitchAutomationGrid[9][8] = 0.4f; pitchAutomationGrid[9][10] = 0.35f; pitchAutomationGrid[9][12] = 0.3f;
             pitchAutomationGrid[7][3] = 0.5f; pitchAutomationGrid[7][7] = 0.55f; pitchAutomationGrid[7][11] = 0.6f; pitchAutomationGrid[7][15] = 0.45f;
+        } else if (index == 14) { // Ambient Pluck (90 BPM)
+            bpm = 90;
+            timeSignature = "4/4";
+            stepsCount = 64;
+            swing = 0.1f;
+            setHits(0, {0, 8});
+            setHits(1, {4, 12});
+            setHits(2, {0, 2, 4, 6, 8, 10, 12, 14});
+            setHits(3, {6, 14});
+            setHits(6, {0, 2, 4, 6, 8, 10, 12, 14});
+            float tomP[8] = {0.3f, 0.4f, 0.5f, 0.6f, 0.4f, 0.5f, 0.7f, 0.5f};
+            for (int s = 0; s < 16; ++s) { pitchAutomationGrid[6][s] = tomP[s % 8]; }
+        } else if (index == 15) { // Chiptune Dance (128 BPM)
+            bpm = 128;
+            timeSignature = "4/4";
+            stepsCount = 64;
+            swing = 0.0f;
+            setHits(0, {0, 4, 8, 12});
+            setHits(1, {4, 12});
+            setHits(2, {0, 2, 4, 6, 8, 10, 12, 14});
+            setHits(3, {2, 6, 10, 14});
+            setHits(7, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15});
+            float beepP[16] = {0.4f, 0.45f, 0.5f, 0.55f, 0.6f, 0.65f, 0.7f, 0.75f, 0.8f, 0.75f, 0.7f, 0.65f, 0.6f, 0.55f, 0.5f, 0.45f};
+            for (int s = 0; s < 16; ++s) { pitchAutomationGrid[7][s] = beepP[s]; }
+        } else if (index == 16) { // Afrobeat Melodic (105 BPM)
+            bpm = 105;
+            timeSignature = "4/4";
+            stepsCount = 64;
+            swing = 0.2f;
+            setHits(0, {0, 6, 10});
+            setHits(1, {4, 12});
+            setHits(2, {0, 2, 4, 6, 8, 10, 12, 14});
+            setHits(3, {6, 14});
+            setHits(9, {0, 3, 5, 8, 10, 13, 15});
+            float bloopP[8] = {0.35f, 0.4f, 0.45f, 0.5f, 0.55f, 0.6f, 0.65f, 0.7f};
+            for (int s = 0; s < 16; ++s) { pitchAutomationGrid[9][s] = bloopP[s % 8]; }
+        } else if (index == 17) { // Lofi Piano Chill (80 BPM)
+            bpm = 80;
+            timeSignature = "4/4";
+            stepsCount = 64;
+            swing = 0.18f;
+            setHits(0, {0, 8, 11});
+            setHits(1, {4, 12});
+            setHits(2, {0, 2, 4, 6, 8, 10, 12, 14});
+            setHits(3, {6, 14});
+            setHits(7, {0, 4, 8, 12});
+            setHits(8, {2, 6, 10, 14});
+            float beepP[4] = {0.3f, 0.35f, 0.4f, 0.35f};
+            float blipP[4] = {0.5f, 0.55f, 0.6f, 0.55f};
+            for (int s = 0; s < 16; ++s) {
+                pitchAutomationGrid[7][s] = beepP[s % 4];
+                pitchAutomationGrid[8][s] = blipP[s % 4];
+            }
+        } else if (index == 18) { // Turkish Saz Trap (140 BPM)
+            bpm = 140;
+            timeSignature = "4/4";
+            stepsCount = 64;
+            swing = 0.05f;
+            setHits(0, {0, 8, 10});
+            setHits(1, {6, 14});
+            setHits(2, {0, 2, 4, 6, 8, 10, 12, 14});
+            setHits(3, {10});
+            setHits(9, {2, 5, 8, 11, 14});
+            float bloopP[8] = {0.25f, 0.3f, 0.35f, 0.4f, 0.45f, 0.5f, 0.55f, 0.6f};
+            for (int s = 0; s < 16; ++s) { pitchAutomationGrid[9][s] = bloopP[s % 8]; }
+        } else { // Symphonic Trap (130 BPM) - index 19 & fallback
+            bpm = 130;
+            timeSignature = "4/4";
+            stepsCount = 64;
+            swing = 0.0f;
+            setHits(0, {0, 8, 11});
+            setHits(1, {4, 12});
+            setHits(2, {0, 2, 4, 6, 8, 10, 12, 14});
+            setHits(3, {6, 14});
+            setHits(7, {0, 4, 8, 12});
+            setHits(9, {0, 2, 4, 6, 8, 10, 12, 14});
+            float beepP[8] = {0.6f, 0.65f, 0.7f, 0.65f, 0.8f, 0.75f, 0.7f, 0.75f};
+            float bloopP[8] = {0.4f, 0.45f, 0.5f, 0.45f, 0.6f, 0.55f, 0.5f, 0.55f};
+            for (int s = 0; s < 16; ++s) {
+                pitchAutomationGrid[7][s] = beepP[s % 8];
+                pitchAutomationGrid[9][s] = bloopP[s % 8];
+            }
         }
 
         // Replicate first 16 steps to fill the rest of the 64 steps
@@ -1216,8 +1562,8 @@ public:
     float sidechainAttack = 0.01f;
 
     Saturator saturator;
-    BiquadFilter filterL;
-    BiquadFilter filterR;
+    MultiFilter filterL;
+    MultiFilter filterR;
     FXDelay delay;
     StereoReverb reverb;
     SidechainDuck sidechain;
@@ -1236,6 +1582,8 @@ public:
         }
         delay.prepare(sampleRate);
         reverb.prepare(sampleRate);
+        filterL.prepare(sampleRate);
+        filterR.prepare(sampleRate);
         
         masterSlamFilter.setParams(BiquadFilter::Lowpass, 160.0f, 1.0f, sampleRate);
         subBassOscPhase = 0.0f;
@@ -1491,12 +1839,8 @@ public:
                     break;
                 case 1: // Filter
                 {
-                    BiquadFilter::Type filterTypeEnum = BiquadFilter::Lowpass;
-                    if (filterType == "highpass") filterTypeEnum = BiquadFilter::Highpass;
-                    else if (filterType == "bandpass") filterTypeEnum = BiquadFilter::Bandpass;
-                    
-                    filterL.setParams(filterTypeEnum, filterCutoff, filterResonance, sampleRate);
-                    filterR.setParams(filterTypeEnum, filterCutoff, filterResonance, sampleRate);
+                    filterL.setParams(filterType, filterCutoff, filterResonance);
+                    filterR.setParams(filterType, filterCutoff, filterResonance);
                     for (int i = 0; i < numSamples; ++i) {
                         leftChannel[i] = filterL.process(leftChannel[i]);
                         rightChannel[i] = filterR.process(rightChannel[i]);
@@ -1664,6 +2008,76 @@ public:
             });
             scheduledTriggers.push_back({
                 sampleIndex + stepDurationSamples / 2, ch, params[ch]["volume"], params[ch]["decay"], params[ch]["tone"], params[ch]["sweep"], params[ch]["snappy"], params[ch]["pitch"], 0.8f, false
+            });
+        } else if (pattern == "crescendo") {
+            int modulo = step % 16;
+            float vol = 0.15f + 0.85f * ((float)modulo / 15.0f);
+            scheduledTriggers.push_back({
+                sampleIndex, 1, params[1]["volume"], params[1]["decay"], params[1]["tone"], params[1]["sweep"], params[1]["snappy"], params[1]["pitch"], vol, false
+            });
+            if (modulo % 4 == 0) {
+                scheduledTriggers.push_back({
+                    sampleIndex, 6, params[6]["volume"], params[6]["decay"], params[6]["tone"], params[6]["sweep"], params[6]["snappy"], 0.5f, vol, false
+                });
+            }
+        } else if (pattern == "pitch_rise") {
+            int modulo = step % 16;
+            float pitch = 0.5f + 1.5f * ((float)modulo / 15.0f);
+            scheduledTriggers.push_back({
+                sampleIndex, 1, params[1]["volume"], params[1]["decay"], params[1]["tone"], params[1]["sweep"], params[1]["snappy"], pitch, 0.7f, false
+            });
+        } else if (pattern == "melodic_run") {
+            int modulo = step % 16;
+            int degrees[16] = {0, 2, 4, 5, 7, 9, 11, 12, 14, 12, 11, 9, 7, 5, 4, 2};
+            int degree = degrees[modulo];
+            float pitch = std::pow(2.0f, (float)degree / 12.0f) * 0.5f;
+            scheduledTriggers.push_back({
+                sampleIndex, 7, params[7]["volume"], params[7]["decay"], params[7]["tone"], params[7]["sweep"], params[7]["snappy"], pitch, 0.8f, false
+            });
+            scheduledTriggers.push_back({
+                sampleIndex, 2, params[2]["volume"], params[2]["decay"], params[2]["tone"], params[2]["sweep"], params[2]["snappy"], params[2]["pitch"], 0.3f, false
+            });
+        } else if (pattern == "drum_n_bass_crossover") {
+            int modulo = step % 16;
+            if (modulo == 0 || modulo == 6 || modulo == 10) {
+                scheduledTriggers.push_back({
+                    sampleIndex, 0, params[0]["volume"], params[0]["decay"], params[0]["tone"], params[0]["sweep"], params[0]["snappy"], params[0]["pitch"], 0.9f, false
+                });
+            } else if (modulo == 4 || modulo == 12 || modulo == 14) {
+                scheduledTriggers.push_back({
+                    sampleIndex, 1, params[1]["volume"], params[1]["decay"], params[1]["tone"], params[1]["sweep"], params[1]["snappy"], params[1]["pitch"], 0.85f, false
+                });
+            } else {
+                scheduledTriggers.push_back({
+                    sampleIndex, 2, params[2]["volume"], params[2]["decay"], params[2]["tone"], params[2]["sweep"], params[2]["snappy"], params[2]["pitch"], 0.5f, false
+                });
+            }
+        } else if (pattern == "dynamic_decay") {
+            int modulo = step % 16;
+            float pct = (float)modulo / 15.0f;
+            if (fxEnabled[1]) { // If filter (fxType 1) is enabled
+                filterCutoff = 300.0f + 4000.0f * pct;
+            }
+            scheduledTriggers.push_back({
+                sampleIndex, 1, params[1]["volume"], params[1]["decay"], params[1]["tone"], params[1]["sweep"], params[1]["snappy"], params[1]["pitch"], 0.8f, false
+            });
+            if (modulo % 2 == 0) {
+                scheduledTriggers.push_back({
+                    sampleIndex, 6, params[6]["volume"], params[6]["decay"], params[6]["tone"], params[6]["sweep"], params[6]["snappy"], 0.4f + 0.4f * pct, 0.7f, false
+                });
+            }
+        } else if (pattern == "chaos_sweep") {
+            int modulo = step % 16;
+            float pct = (float)modulo / 15.0f;
+            if (fxEnabled[1]) { // If filter is enabled
+                filterType = "bandpass";
+                filterCutoff = 200.0f + 8000.0f * pct;
+                filterResonance = 5.0f;
+            }
+            int randIdx = 6 + (std::rand() % 6);
+            float randPitch = 0.5f + ((float)(std::rand() % 100) / 100.0f) * 1.0f;
+            scheduledTriggers.push_back({
+                sampleIndex, randIdx, params[randIdx]["volume"], params[randIdx]["decay"], params[randIdx]["tone"], params[randIdx]["sweep"], params[randIdx]["snappy"], randPitch, 0.7f, false
             });
         }
     }
@@ -2054,11 +2468,18 @@ float InstrumentVoice::nextSample(double sampleRate) {
 // =============================================================================
 // 4. CUSTOM LOOKANDFEEL & KNOB WIDGETS
 // =============================================================================
-
 class GlassmorphicLookAndFeel : public juce::LookAndFeel_V4 {
 public:
     GlassmorphicLookAndFeel() {
         setColour(juce::Slider::thumbColourId, juce::Colour(0xff2b2927));
+        setColour(juce::ComboBox::textColourId, juce::Colour(0xff2c3e50));
+        setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xffffffff));
+        setColour(juce::ComboBox::outlineColourId, juce::Colour(0x28000000));
+        setColour(juce::ComboBox::arrowColourId, juce::Colour(0xff706b64));
+        setColour(juce::PopupMenu::backgroundColourId, juce::Colour(0xffffffff));
+        setColour(juce::PopupMenu::textColourId, juce::Colour(0xff2c3e50));
+        setColour(juce::PopupMenu::highlightedBackgroundColourId, juce::Colour(0xffe67e22));
+        setColour(juce::PopupMenu::highlightedTextColourId, juce::Colours::white);
     }
 
     void drawRotarySlider(juce::Graphics& g, int x, int y, int width, int height,
@@ -2121,6 +2542,35 @@ public:
         g.drawText(button.getButtonText(),
                    24, 0, button.getWidth() - 24, button.getHeight(),
                    juce::Justification::centredLeft, true);
+    }
+
+    void drawComboBox(juce::Graphics& g, int width, int height, bool isButtonDown,
+                      int buttonX, int buttonY, int buttonWidth, int buttonHeight,
+                      juce::ComboBox& box) override {
+        auto cornerSize = 6.0f;
+        juce::Rectangle<int> boxBounds(0, 0, width, height);
+
+        g.setColour(juce::Colour(0xffffffff));
+        g.fillRoundedRectangle(boxBounds.toFloat(), cornerSize);
+
+        g.setColour(juce::Colour(0x1f000000)); // subtle outline
+        g.drawRoundedRectangle(boxBounds.toFloat(), cornerSize, 1.2f);
+
+        // Draw a neat downward arrow on the right
+        int arrowX = width - 18;
+        int arrowY = height / 2 - 2;
+        juce::Path p;
+        p.startNewSubPath((float)arrowX, (float)arrowY);
+        p.lineTo((float)(arrowX + 8), (float)arrowY);
+        p.lineTo((float)(arrowX + 4), (float)(arrowY + 4));
+        p.closeSubPath();
+
+        g.setColour(juce::Colour(0xff706b64));
+        g.fillPath(p);
+    }
+
+    juce::Font getComboBoxFont(juce::ComboBox& box) override {
+        return juce::FontOptions("sans-serif", 12.0f, juce::Font::plain);
     }
 };
 
@@ -2860,9 +3310,26 @@ public:
         }
 
         int selectIdx = instSelector.getSelectedItemIndex();
-        g.setColour(getTrackColour(selectIdx));
         float* activeGrid = getActiveGridPtr(selectIdx);
 
+        // Draw vertical trigger indicator columns and lines themed in track color
+        for (int s = 0; s < steps; ++s) {
+            if (processor.patternGrid[selectIdx][s]) {
+                float x = gridBounds.getX() + s * stepW;
+                
+                // Draw soft column highlight in track color
+                juce::Colour trackCol = getTrackColour(selectIdx);
+                g.setColour(trackCol.withAlpha(0.06f));
+                g.fillRect(x, gridBounds.getY(), stepW, gridBounds.getHeight());
+                
+                // Draw center vertical line in track color (dashed look or more solid)
+                float dotX = x + stepW * 0.5f;
+                g.setColour(trackCol.withAlpha(0.35f));
+                g.drawVerticalLine((int)dotX, gridBounds.getY(), gridBounds.getBottom());
+            }
+        }
+
+        g.setColour(getTrackColour(selectIdx));
         for (int s = 0; s < steps; ++s) {
             float val = activeGrid[s];
             float dotX = gridBounds.getX() + s * stepW + stepW * 0.5f;
@@ -2942,7 +3409,9 @@ private:
 
 class ModularFXCard : public juce::Component, public juce::Timer {
 public:
-    ModularFXCard(int typeIdx, PhyzixAudioProcessor& p) : fxType(typeIdx), processor(p) {
+        ModularFXCard(int typeIdx, PhyzixAudioProcessor& p) : fxType(typeIdx), processor(p) {
+        typeCombo.setLookAndFeel(&lnf);
+        pluginCombo.setLookAndFeel(&lnf);
         setName(getFXName());
         titleLabel.setText(getFXName().toUpperCase(), juce::dontSendNotification);
         titleLabel.setFont(juce::FontOptions(14.0f, juce::Font::bold));
@@ -2977,10 +3446,12 @@ public:
         }
     }
 
-    ~ModularFXCard() override {
+        ~ModularFXCard() override {
         if (fxType == 5) {
             stopTimer();
         }
+        typeCombo.setLookAndFeel(nullptr);
+        pluginCombo.setLookAndFeel(nullptr);
     }
 
     void updateControlsFromProcessor() {
@@ -2991,7 +3462,18 @@ public:
         } else if (fxType == 1) { 
             k1->slider.setValue(processor.filterCutoff, juce::dontSendNotification);
             k2->slider.setValue(processor.filterResonance, juce::dontSendNotification);
-            typeCombo.setText(processor.filterType, juce::dontSendNotification);
+            juce::String type = processor.filterType;
+            int selIdx = 0;
+            if (type == "highpass") selIdx = 1;
+            else if (type == "bandpass") selIdx = 2;
+            else if (type == "comb") selIdx = 3;
+            else if (type == "formant") selIdx = 4;
+            else if (type == "ringmod") selIdx = 5;
+            else if (type == "phaser") selIdx = 6;
+            else if (type == "lowpass24") selIdx = 7;
+            else if (type == "notch") selIdx = 8;
+            else if (type == "peaking") selIdx = 9;
+            typeCombo.setSelectedItemIndex(selIdx, juce::dontSendNotification);
         } else if (fxType == 2) { 
             k1->slider.setValue(processor.delayTime, juce::dontSendNotification);
             k2->slider.setValue(processor.delayFeedback, juce::dontSendNotification);
@@ -3065,6 +3547,7 @@ public:
 private:
     int fxType;
     PhyzixAudioProcessor& processor;
+    GlassmorphicLookAndFeel lnf;
 
     juce::Label titleLabel;
     juce::TextButton leftArrow;
@@ -3190,15 +3673,29 @@ private:
             k2->setBindingContext(-1, "filterResonance", &processor);
             addAndMakeVisible(k2.get());
 
-            typeCombo.addItem("Lowpass", 1);
-            typeCombo.addItem("Highpass", 2);
+            typeCombo.addItem("LP (12dB)", 1);
+            typeCombo.addItem("HP (12dB)", 2);
             typeCombo.addItem("Bandpass", 3);
+            typeCombo.addItem("Comb Filter", 4);
+            typeCombo.addItem("Formant (Vowel)", 5);
+            typeCombo.addItem("Ring Mod", 6);
+            typeCombo.addItem("Phaser", 7);
+            typeCombo.addItem("LP (24dB)", 8);
+            typeCombo.addItem("Notch Reject", 9);
+            typeCombo.addItem("Peaking EQ", 10);
             typeCombo.setSelectedItemIndex(0, juce::dontSendNotification);
             typeCombo.onChange = [this]() {
                 int idx = typeCombo.getSelectedItemIndex();
                 if (idx == 0) processor.filterType = "lowpass";
                 else if (idx == 1) processor.filterType = "highpass";
                 else if (idx == 2) processor.filterType = "bandpass";
+                else if (idx == 3) processor.filterType = "comb";
+                else if (idx == 4) processor.filterType = "formant";
+                else if (idx == 5) processor.filterType = "ringmod";
+                else if (idx == 6) processor.filterType = "phaser";
+                else if (idx == 7) processor.filterType = "lowpass24";
+                else if (idx == 8) processor.filterType = "notch";
+                else if (idx == 9) processor.filterType = "peaking";
             };
             addAndMakeVisible(typeCombo);
         } else if (fxType == 2) { // Delay
@@ -3646,7 +4143,7 @@ private:
 "\n"
 "2. PRESET MANAGER\n"
 "-----------------\n"
-" - FACTORY PRESETS DROPDOWN: Load patterns and modular effects combinations.\n"
+" - FACTORY PRESETS DROPDOWN: Load patterns and modular effects combinations, including 6 new melodic presets (Ambient Pluck, Chiptune Dance, Afrobeat Melodic, Lofi Piano Chill, Turkish Saz Trap, Symphonic Trap).\n"
 " - USER PRESETS DROPDOWN: Load custom user presets from application folder.\n"
 " - NAME EDITOR: Type a text name for a custom configuration.\n"
 " - [SAVE] BUTTON: Writes a preset JSON file to disk under UserPresets.\n"
@@ -3746,6 +4243,7 @@ private:
 " - CLEAR GRID: Instantly removes all triggers from the sequencer grid.\n"
 " - CLEAR MOTION: Clears all custom drawn velocity and note automation envelopes.\n"
 " - EXPORT MIDI: Drag and drop this button into DAW to export sequence as MIDI.\n"
+" - FILL BUTTON: Triggers momentary fills based on selected fill pattern dropdown (Snare Roll, Tom Build, Glitch, Stutter, Half-Tempo, Crescendo, Pitch Rise, Melodic Run, DnB Crossover, Dynamic Decay, Chaos Sweep).\n"
 "================================================================================";
 
             case 3:
@@ -3875,6 +4373,14 @@ public:
           pianoRoll(p),
           effectsPanel(p)
     {
+        // Apply GlassmorphicLookAndFeel to ComboBoxes and Buttons
+        timeSigCombo.setLookAndFeel(&lnf);
+        stepsCombo.setLookAndFeel(&lnf);
+        presetCombo.setLookAndFeel(&lnf);
+        userPresetCombo.setLookAndFeel(&lnf);
+        doorTypeCombo.setLookAndFeel(&lnf);
+        slamButton.setLookAndFeel(&lnf);
+
         // Title logo handled by custom paint()
 
         // Help manual button and overlay
@@ -3929,6 +4435,12 @@ public:
         presetCombo.addItem("Factory: Future Bass Half-Time", 12);
         presetCombo.addItem("Factory: Melodic Hip-Hop", 13);
         presetCombo.addItem("Factory: Ethnic Drill", 14);
+        presetCombo.addItem("Factory: Ambient Pluck", 15);
+        presetCombo.addItem("Factory: Chiptune Dance", 16);
+        presetCombo.addItem("Factory: Afrobeat Melodic", 17);
+        presetCombo.addItem("Factory: Lofi Piano Chill", 18);
+        presetCombo.addItem("Factory: Turkish Saz Trap", 19);
+        presetCombo.addItem("Factory: Symphonic Trap", 20);
         presetCombo.setSelectedItemIndex(0, juce::dontSendNotification);
         presetCombo.onChange = [this]() {
             processor.loadPreset(presetCombo.getSelectedItemIndex());
@@ -4017,7 +4529,7 @@ public:
         swingSlider->setBindingContext(-1, "swing", &processor);
         addAndMakeVisible(swingSlider.get());
 
-        slamButton.setButtonText("SLAM THE DOOR");
+                slamButton.setButtonText("SLAM\nTHE\nDOOR");
         slamButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xffe67e22));
         slamButton.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
         slamButton.onClick = [this]() {
@@ -4086,7 +4598,14 @@ public:
         fillPatternCombo.addItem("Traditional Snare", 1);
         fillPatternCombo.addItem("Traditional Toms", 2);
         fillPatternCombo.addItem("Glitch 32nd Note", 3);
-        fillPatternCombo.addItem("focused Stutter", 4);
+        fillPatternCombo.addItem("Focused Stutter", 4);
+        fillPatternCombo.addItem("Half-Tempo Break", 5);
+        fillPatternCombo.addItem("Crescendo Build", 6);
+        fillPatternCombo.addItem("Pitch Rise", 7);
+        fillPatternCombo.addItem("Melodic Run", 8);
+        fillPatternCombo.addItem("DnB Crossover", 9);
+        fillPatternCombo.addItem("Dynamic Decay", 10);
+        fillPatternCombo.addItem("Chaos Sweep", 11);
         fillPatternCombo.setSelectedItemIndex(0, juce::dontSendNotification);
         fillPatternCombo.onChange = [this]() {
             int idx = fillPatternCombo.getSelectedItemIndex();
@@ -4094,6 +4613,13 @@ public:
             else if (idx == 1) processor.fillPattern = "traditional_b";
             else if (idx == 2) processor.fillPattern = "glitch";
             else if (idx == 3) processor.fillPattern = "stutter";
+            else if (idx == 4) processor.fillPattern = "half_tempo";
+            else if (idx == 5) processor.fillPattern = "crescendo";
+            else if (idx == 6) processor.fillPattern = "pitch_rise";
+            else if (idx == 7) processor.fillPattern = "melodic_run";
+            else if (idx == 8) processor.fillPattern = "drum_n_bass_crossover";
+            else if (idx == 9) processor.fillPattern = "dynamic_decay";
+            else if (idx == 10) processor.fillPattern = "chaos_sweep";
         };
         addAndMakeVisible(fillPatternCombo);
 
@@ -4255,7 +4781,9 @@ public:
             addAndMakeVisible(card);
         }
 
-        processor.loadPreset(0);
+                processor.loadPreset(0);
+        processor.stepsCount = 16;
+        stepsCombo.setText("16 Steps", juce::dontSendNotification);
         updateSequencerGridUI();
         updateAllDrumCardSliders();
         effectsPanel.updateControlsFromProcessor();
@@ -4263,8 +4791,14 @@ public:
         activeTabChanged();
     }
 
-    ~MainContentComponent() override {
+        ~MainContentComponent() override {
         latchCheck.setLookAndFeel(nullptr);
+        timeSigCombo.setLookAndFeel(nullptr);
+        stepsCombo.setLookAndFeel(nullptr);
+        presetCombo.setLookAndFeel(nullptr);
+        userPresetCombo.setLookAndFeel(nullptr);
+        doorTypeCombo.setLookAndFeel(nullptr);
+        slamButton.setLookAndFeel(nullptr);
         tabBar.removeChangeListener(this);
     }
 
@@ -4446,10 +4980,11 @@ public:
         presetNameEditor.setBounds(815, 40, 90, 30);
         savePresetButton.setBounds(915, 40, 50, 30);
         
-        slamButton.setBounds(975, 40, 100, 30);
-        latchCheck.setBounds(1085, 45, 50, 20);
-        doorTypeCombo.setBounds(1140, 40, 80, 30);
-        slamMixSlider->setBounds(1225, 30, 45, 50);
+                // Slam section as a large cohesive block on the right
+        slamButton.setBounds(975, 40, 70, 70); // 70x70 large square!
+        latchCheck.setBounds(1055, 45, 80, 24); // widened to fit "LATCH" text
+        doorTypeCombo.setBounds(1055, 75, 110, 28); // widened
+        slamMixSlider->setBounds(1180, 45, 65, 60);
 
         // Row 2 (Y=85)
         fillPanel.setBounds(20, 87, 200, 20);
@@ -4457,8 +4992,9 @@ public:
         fillPatternCombo.setBounds(300, 85, 150, 28);
         midiCCButton.setBounds(460, 85, 130, 28);
         
-        collapseEditorBtn.setBounds(700, 85, 170, 28);
-        collapseDrumsBtn.setBounds(880, 85, 180, 28);
+        // Collapse buttons shifted leftwards to clear the Slam section
+        collapseEditorBtn.setBounds(610, 85, 170, 28);
+        collapseDrumsBtn.setBounds(790, 85, 175, 28);
 
         // Oscilloscope (Y=125)
         oscilloscope.setBounds(20, 125, 1240, 50);
